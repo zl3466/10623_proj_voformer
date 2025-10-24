@@ -1,0 +1,13 @@
+{"time":"2025-10-24T00:27:40.478107546-04:00","level":"INFO","msg":"stream: starting","core version":"0.22.2"}
+{"time":"2025-10-24T00:27:40.744873044-04:00","level":"INFO","msg":"stream: created new stream","id":"yfeset4p"}
+{"time":"2025-10-24T00:27:40.745120283-04:00","level":"INFO","msg":"handler: started","stream_id":"yfeset4p"}
+{"time":"2025-10-24T00:27:40.745457534-04:00","level":"INFO","msg":"stream: started","id":"yfeset4p"}
+{"time":"2025-10-24T00:27:40.745623854-04:00","level":"INFO","msg":"sender: started","stream_id":"yfeset4p"}
+{"time":"2025-10-24T00:27:40.745624745-04:00","level":"INFO","msg":"writer: started","stream_id":"yfeset4p"}
+{"time":"2025-10-24T00:27:41.147933352-04:00","level":"INFO","msg":"flowcontrol: backed up, offloading to disk","recordNumber":38}
+{"time":"2025-10-24T00:27:41.271201997-04:00","level":"INFO","msg":"flowcontrol: unblocked","totalOffloaded":12}
+{"time":"2025-10-24T00:27:41.292208483-04:00","level":"INFO","msg":"stream: closing","id":"yfeset4p"}
+{"time":"2025-10-24T00:27:41.705584213-04:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-10-24T00:27:41.883437211-04:00","level":"INFO","msg":"handler: closed","stream_id":"yfeset4p"}
+{"time":"2025-10-24T00:27:41.883585384-04:00","level":"INFO","msg":"sender: closed","stream_id":"yfeset4p"}
+{"time":"2025-10-24T00:27:41.883606522-04:00","level":"INFO","msg":"stream: closed","id":"yfeset4p"}

@@ -1,0 +1,11 @@
+{"time":"2025-10-24T00:50:11.854736372-04:00","level":"INFO","msg":"stream: starting","core version":"0.22.2"}
+{"time":"2025-10-24T00:50:12.107163188-04:00","level":"INFO","msg":"stream: created new stream","id":"rsdr75pn"}
+{"time":"2025-10-24T00:50:12.107337924-04:00","level":"INFO","msg":"handler: started","stream_id":"rsdr75pn"}
+{"time":"2025-10-24T00:50:12.107429418-04:00","level":"INFO","msg":"stream: started","id":"rsdr75pn"}
+{"time":"2025-10-24T00:50:12.107483932-04:00","level":"INFO","msg":"writer: started","stream_id":"rsdr75pn"}
+{"time":"2025-10-24T00:50:12.107498-04:00","level":"INFO","msg":"sender: started","stream_id":"rsdr75pn"}
+{"time":"2025-10-24T00:50:12.911728654-04:00","level":"INFO","msg":"stream: closing","id":"rsdr75pn"}
+{"time":"2025-10-24T00:50:13.468514802-04:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-10-24T00:50:13.641284064-04:00","level":"INFO","msg":"handler: closed","stream_id":"rsdr75pn"}
+{"time":"2025-10-24T00:50:13.641500941-04:00","level":"INFO","msg":"sender: closed","stream_id":"rsdr75pn"}
+{"time":"2025-10-24T00:50:13.6415439-04:00","level":"INFO","msg":"stream: closed","id":"rsdr75pn"}

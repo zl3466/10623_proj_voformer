@@ -1,0 +1,2 @@
+python train.py --nusc_data_path /home/zl3466/Documents/dataset/NuScenes
+

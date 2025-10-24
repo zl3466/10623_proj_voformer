@@ -1,0 +1,51 @@
+  0%|                                                                                                                                                                                  | 0/1860 [00:00<?, ?it/s]Traceback (most recent call last):
+{'pixel_values': tensor([[[ 0.5581,  0.5873,  0.6165,  ...,  1.1363,  1.1932,  1.1789],
+         [ 0.5143,  0.6165,  0.7625,  ...,  0.6528,  0.7381,  0.6528],
+         [ 0.6165,  0.6165,  0.6165,  ...,  1.1221,  1.1221,  1.1078],
+         ...,
+         [-0.2886, -0.3470, -0.3324,  ..., -0.1578, -0.1720, -0.1720],
+         [-0.2886, -0.3032, -0.3470,  ..., -0.1862, -0.1720, -0.2146],
+         [-0.3616, -0.3762, -0.4346,  ..., -0.2289, -0.2573, -0.2004]]],
+       device='cuda:0'), 'input_ids': tensor([[999, 999, 618, 999, 999, 617, 999, 999, 615, 999, 999, 614, 999, 999,
+         611, 999, 999, 609, 999, 999, 608, 999, 999, 607]], device='cuda:0'), 'labels': tensor([[999, 999, 604, 999, 999, 603, 999, 999, 600, 999, 999, 598, 999, 999,
+         597, 999, 999, 595, 999, 999, 594, 999, 999, 593, 999, 999, 591, 999,
+         999, 589, 999, 999, 588, 999, 999, 586, 999, 999, 584, 999, 999, 583,
+         999, 999, 581, 999, 999, 579]], device='cuda:0'), 'attention_mask': tensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]],
+       device='cuda:0')}
+  File "/home/zl3466/Documents/cmu/10623/proj/train.py", line 123, in <module>
+    main()
+  File "/home/zl3466/Documents/cmu/10623/proj/train.py", line 118, in main
+    trainer.train()
+  File "/home/zl3466/Documents/cmu/10623/proj/src/vo_trainer.py", line 261, in train
+    trainer.train()
+  File "/home/zl3466/anaconda3/envs/voformer/lib/python3.9/site-packages/transformers/trainer.py", line 2325, in train
+    return inner_training_loop(
+  File "/home/zl3466/anaconda3/envs/voformer/lib/python3.9/site-packages/transformers/trainer.py", line 2674, in _inner_training_loop
+    tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
+  File "/home/zl3466/anaconda3/envs/voformer/lib/python3.9/site-packages/transformers/trainer.py", line 4020, in training_step
+    loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+  File "/home/zl3466/Documents/cmu/10623/proj/src/vo_trainer.py", line 40, in compute_loss
+    outputs = model(**inputs)
+  File "/home/zl3466/anaconda3/envs/voformer/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/zl3466/anaconda3/envs/voformer/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/zl3466/Documents/cmu/10623/proj/src/vo_model.py", line 30, in forward
+    outputs = self.base_model(
+  File "/home/zl3466/anaconda3/envs/voformer/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/zl3466/anaconda3/envs/voformer/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/zl3466/anaconda3/envs/voformer/lib/python3.9/site-packages/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py", line 1257, in forward
+    image_embeds = self.get_image_features(pixel_values, image_grid_thw)
+  File "/home/zl3466/anaconda3/envs/voformer/lib/python3.9/site-packages/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py", line 1170, in get_image_features
+    image_embeds = self.visual(pixel_values, grid_thw=image_grid_thw)
+  File "/home/zl3466/anaconda3/envs/voformer/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/zl3466/anaconda3/envs/voformer/lib/python3.9/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/zl3466/anaconda3/envs/voformer/lib/python3.9/site-packages/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py", line 418, in forward
+    rotary_pos_emb = self.rot_pos_emb(grid_thw)
+  File "/home/zl3466/anaconda3/envs/voformer/lib/python3.9/site-packages/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py", line 338, in rot_pos_emb
+    for t, h, w in grid_thw:
+TypeError: 'NoneType' object is not iterable

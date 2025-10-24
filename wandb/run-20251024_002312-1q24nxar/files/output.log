@@ -1,0 +1,59 @@
+INFO:src.vo_trainer:Wandb initialized for logging
+
+============================================================
+TRAINING SUMMARY
+============================================================
+Model: Qwen/Qwen2.5-VL-3B-Instruct
+Dataset size: 0
+Batch size: 1
+Learning rate: 1e-5
+Epochs: 10
+Output directory: ./vo_output
+
+Model parameters:
+  Total: 3,756,671,976
+  Trainable: 3,756,671,976
+  Non-trainable: 0
+
+Device: {'cuda_available': True, 'device_count': 1, 'current_device': 0, 'device_name': 'NVIDIA GeForce RTX 3090', 'memory_allocated': 7519661568, 'memory_reserved': 7633633280}
+============================================================
+INFO:src.vo_trainer:Preparing NuScenes datasets...
+INFO:root:Loading new NuScenes dataset.
+INFO:root:[Nuscenes] Creating camera meta at ./nusc_meta.json
+======
+Loading NuScenes tables for version v1.0-test...
+23 category,
+8 attribute,
+4 visibility,
+0 instance,
+12 sensor,
+1800 calibrated_sensor,
+462901 ego_pose,
+15 log,
+150 scene,
+6008 sample,
+462901 sample_data,
+0 sample_annotation,
+4 map,
+Done loading in 2.246 seconds.
+======
+Reverse indexing ...
+Done reverse indexing in 0.4 seconds.
+======
+INFO:root:[Pixel] Saved camera meta to ./nusc_meta.json
+INFO:root:[Pixel] Min shared scene length: 232
+INFO:root:[Pixel] Start timestep: 0
+INFO:root:[Pixel] End timestep: 232
+INFO:root:Loaded 232 poses and 232 images
+INFO:src.vo_trainer:Train samples: 185
+INFO:src.vo_trainer:Validation samples: 47
+INFO:__main__:Starting training...
+INFO:src.vo_trainer:Starting training with Hugging Face Trainer...
+Traceback (most recent call last):
+  File "/home/zl3466/Documents/cmu/10623/proj/train.py", line 130, in <module>
+    main()
+  File "/home/zl3466/Documents/cmu/10623/proj/train.py", line 125, in main
+    trainer.train()
+  File "/home/zl3466/Documents/cmu/10623/proj/src/vo_trainer.py", line 211, in train
+    training_args = TrainingArguments(
+TypeError: __init__() got an unexpected keyword argument 'evaluation_strategy'

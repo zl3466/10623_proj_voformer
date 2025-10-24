@@ -1,0 +1,11 @@
+{"time":"2025-10-24T01:14:43.4477377-04:00","level":"INFO","msg":"stream: starting","core version":"0.22.2"}
+{"time":"2025-10-24T01:14:43.689413969-04:00","level":"INFO","msg":"stream: created new stream","id":"eqvovpn5"}
+{"time":"2025-10-24T01:14:43.689563745-04:00","level":"INFO","msg":"handler: started","stream_id":"eqvovpn5"}
+{"time":"2025-10-24T01:14:43.689918247-04:00","level":"INFO","msg":"stream: started","id":"eqvovpn5"}
+{"time":"2025-10-24T01:14:43.689952664-04:00","level":"INFO","msg":"writer: started","stream_id":"eqvovpn5"}
+{"time":"2025-10-24T01:14:43.689967505-04:00","level":"INFO","msg":"sender: started","stream_id":"eqvovpn5"}
+{"time":"2025-10-24T01:14:44.757997829-04:00","level":"INFO","msg":"stream: closing","id":"eqvovpn5"}
+{"time":"2025-10-24T01:14:45.266246525-04:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-10-24T01:14:45.423836479-04:00","level":"INFO","msg":"handler: closed","stream_id":"eqvovpn5"}
+{"time":"2025-10-24T01:14:45.424173205-04:00","level":"INFO","msg":"sender: closed","stream_id":"eqvovpn5"}
+{"time":"2025-10-24T01:14:45.424227545-04:00","level":"INFO","msg":"stream: closed","id":"eqvovpn5"}
