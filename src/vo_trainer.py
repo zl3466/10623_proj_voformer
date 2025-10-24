@@ -35,7 +35,7 @@ class VOTrainer(Trainer):
     """Custom trainer for Visual Odometry with pose-specific metrics"""
     
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=1):
-        # print(inputs)
+        # print(f"compute loss inputs: {inputs}")
         """Custom loss computation"""
         outputs = model(**inputs)
         loss = outputs['loss']
@@ -102,7 +102,7 @@ class VOPoseDataCollator:
         self.tokenizer = tokenizer
     
     def __call__(self, features):
-        """Collate batch of pose data using custom pose tokenization"""
+        """Collate batch of fused visual and pose data"""
         # Handle pixel_values properly - don't squeeze if it changes the expected shape
         pixel_values_list = []
         for item in features:
@@ -115,12 +115,14 @@ class VOPoseDataCollator:
         pixel_values = torch.stack(pixel_values_list)
         input_ids = torch.stack([item['input_ids'] for item in features])
         labels = torch.stack([item['labels'] for item in features])
+        attention_mask = torch.stack([item['attention_mask'] for item in features])
+    
         
         return {
             'pixel_values': pixel_values,
             'input_ids': input_ids,
             'labels': labels,
-            'attention_mask': torch.ones_like(input_ids)  # Simple attention mask for pose tokens
+            'attention_mask': attention_mask
         }
 
 class NuScenesVOTrainer:

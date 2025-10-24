@@ -8,9 +8,9 @@ model:
 # Data configuration
 data:
   dir: "/home/zl3466/Documents/dataset/NuScenes"
-  num_input_frames: 8      # 8 input translation deltas (requires 9 images)
-  num_input_poses: 8       # 8 input translation deltas (requires 9 poses)
-  num_target_poses: 16     # 16 target translation deltas to predict (requires 17 poses)
+  num_input_frames: 3      # 8 input translation deltas (requires 9 images)
+  num_input_poses: 3       # 8 input translation deltas (requires 9 poses)
+  num_target_poses: 6     # 16 target translation deltas to predict (requires 17 poses)
 
 # Training configuration
 training:
@@ -39,5 +39,5 @@ pose:
 # Image processing configuration
 image:
   input_size: 256  # Changed to 256 to get 16x16 = 256 tokens (perfect square)
-  num_tokens: 144
+  num_tokens: 64
   # patch_size: 16  # Patch size for Qwen2.5-VL vision encoder

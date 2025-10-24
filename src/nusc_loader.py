@@ -320,8 +320,7 @@ class NuScenesPoseDataset:
         num_target_poses_needed = num_target_deltas + 1  # Need 17 poses to get 16 deltas
         
         # Images should match the number of poses needed
-        num_input_images_needed = num_input_poses_needed  # 9 images for 9 poses
-        num_target_images_needed = num_target_poses_needed  # 17 images for 17 poses
+        num_input_images_needed = self.config['data']['num_input_frames']
         
         # For training, we only need input images (9 images) to predict future pose deltas (16 deltas)
         # We don't need target images, only target poses
@@ -343,22 +342,56 @@ class NuScenesPoseDataset:
                     img = img.resize((self.config['image']['input_size'], self.config['image']['input_size']), Image.Resampling.LANCZOS)
                 input_images.append(img)
         
-        # Process images with Qwen2.5-VL processor
-        # For visual odometry, we don't need text input, so we pass an empty string
+        # Step 1: Process images with Qwen2.5-VL processor to get visual tokens
+        # We need to get the visual tokens from the processor
         processed_inputs = self.processor(
             images=input_images,
-            text="",  # Empty text for visual odometry task
+            text="",  # Empty text - we only want visual tokens
             return_tensors="pt",
             padding=True
         )
         
-        # Tokenize poses using your custom pose tokenizer
-        input_tokens, target_tokens = self._tokenize_poses_with_config(input_poses, target_poses)
+        # Step 2: Tokenize poses using your custom pose delta tokenizer
+        input_pose_tokens, target_pose_tokens = self._tokenize_poses_with_config(input_poses, target_poses)
+        
+        # Step 3: Create extended input sequence with placeholder tokens
+        # Input sequence: [input_pose_tokens, placeholder_tokens] (24 + 48 = 72 tokens)
+        # Labels: [input_pose_tokens, target_pose_tokens] (24 + 48 = 72 tokens)
+        # Loss will be computed only on placeholder positions (last 48 tokens)
+        
+        # Create placeholder tokens (use a special token ID, e.g., 0 or a specific placeholder ID)
+        placeholder_token_id = 0  # Use 0 as placeholder token
+        placeholder_tokens = np.full(len(target_pose_tokens), placeholder_token_id, dtype=np.int32)
+        
+        # Combine input pose tokens with placeholder tokens
+        extended_pose_tokens = np.concatenate([input_pose_tokens, placeholder_tokens])
+        
+        # Create labels: only target tokens (for loss computation)
+        # We only want to compute loss on target pose tokens, not input tokens
+        extended_labels = target_pose_tokens
+        
+        pose_tokens = torch.tensor(extended_pose_tokens, dtype=torch.long)
+        pose_labels = torch.tensor(extended_labels, dtype=torch.long)
+        
+        # Ensure proper dimensions
+        if pose_tokens.dim() == 1:
+            pose_tokens = pose_tokens.unsqueeze(0)
+        if pose_labels.dim() == 1:
+            pose_labels = pose_labels.unsqueeze(0)
+        
+        # Create attention mask for extended pose tokens
+        pose_attention_mask = torch.ones_like(pose_tokens, dtype=torch.long)
+        
+        # print(f"Input pose tokens length: {len(input_pose_tokens)}")
+        # print(f"Target pose tokens length: {len(target_pose_tokens)}")
+        # print(f"Extended pose tokens shape: {pose_tokens.shape}")
+        # print(f"Extended labels shape: {pose_labels.shape}")
         
         return {
             'pixel_values': processed_inputs['pixel_values'],
-            'input_ids': torch.tensor(input_tokens, dtype=torch.long),
-            'labels': torch.tensor(target_tokens, dtype=torch.long),
+            'input_ids': pose_tokens,  # Input + placeholder tokens (72 tokens)
+            'labels': pose_labels,     # Masked input + target tokens (72 tokens)
+            'attention_mask': pose_attention_mask,
         }
     
     def _extract_pose_features(self, pose):
