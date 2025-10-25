@@ -462,8 +462,8 @@ class NuScenesPoseDataset:
         # Get pose token offset from the model's tokenizer
         # This should be set when the model is initialized with pose tokens
         pose_token_offset = getattr(self, 'pose_token_offset', 1000)  # Default fallback
-        if hasattr(self, 'model') and hasattr(self.model, 'pose_token_start_idx'):
-            pose_token_offset = self.model.pose_token_start_idx
+        if hasattr(self, 'model') and hasattr(self.model, 'pose_token_start_id'):
+            pose_token_offset = self.model.pose_token_start_id
         pose_vocab_size = self.config['model']['vocab_size']
         
         # Tokenize input deltas

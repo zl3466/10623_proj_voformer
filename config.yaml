@@ -14,20 +14,21 @@ vision:
 # Data configuration
 data:
   dir: "/home/zl3466/Documents/dataset/NuScenes"
-  num_input_frames: 4      # 8 input translation deltas (requires 9 images)
-  num_input_poses: 4       # 8 input translation deltas (requires 9 poses)
-  num_target_poses: 8     # 16 target translation deltas to predict (requires 17 poses)
+  num_input_frames: 8      # 8 input translation deltas (requires 9 images)
+  num_input_poses: 8       # 8 input translation deltas (requires 9 poses)
+  num_target_poses: 32     # 16 target translation deltas to predict (requires 17 poses)
+  train_split: 0.99        # Fraction of data to use for training (0.95 = 95% train, 5% val)
 
 # Training configuration
 training:
   output_dir: "./vo_output"
-  num_epochs: 10
-  batch_size: 1
+  num_epochs: 2
+  batch_size: 2
   learning_rate: 1e-5
   warmup_steps: 100
   logging_steps: 10
-  save_steps: 500
-  eval_steps: 500
+  save_steps: 1000
+  eval_steps: 1000
   max_grad_norm: 1.0
   weight_decay: 0.01
   use_wandb: true

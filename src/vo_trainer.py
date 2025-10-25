@@ -35,6 +35,49 @@ logger = logging.getLogger(__name__)
 class VOTrainer(Trainer):
     """Custom trainer for Visual Odometry with pose-specific metrics"""
     
+    def _save_checkpoint(self, model, trial):
+        """
+        Override _save_checkpoint to limit the number of saved checkpoints to 3.
+        Before saving a new checkpoint, delete the earliest one if there are already 3 checkpoints.
+        """
+        # Call parent method to save the checkpoint
+        super()._save_checkpoint(model, trial)
+        
+        # After saving, check and clean up old checkpoints
+        self._cleanup_old_checkpoints()
+    
+    def _cleanup_old_checkpoints(self):
+        """Keep only the latest 3 checkpoints, deleting the oldest ones"""
+        import os
+        import glob
+        import shutil
+        
+        output_dir = self.args.output_dir
+        
+        # Find all checkpoint directories
+        checkpoint_dirs = glob.glob(os.path.join(output_dir, "checkpoint-*"))
+        
+        if len(checkpoint_dirs) > 3:
+            # Sort checkpoints by their step number
+            checkpoint_steps = []
+            for ckpt_dir in checkpoint_dirs:
+                try:
+                    # Extract step number from checkpoint directory name
+                    step = int(os.path.basename(ckpt_dir).split('-')[-1])
+                    checkpoint_steps.append((step, ckpt_dir))
+                except ValueError:
+                    continue
+            
+            # Sort by step number (ascending)
+            checkpoint_steps.sort(key=lambda x: x[0])
+            
+            # Delete the oldest checkpoint(s)
+            num_to_delete = len(checkpoint_steps) - 3
+            for i in range(num_to_delete):
+                oldest_checkpoint = checkpoint_steps[i][1]
+                logger.info(f"Deleting old checkpoint: {oldest_checkpoint}")
+                shutil.rmtree(oldest_checkpoint)
+    
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=1):
         # print(f"compute loss inputs: {inputs}")
         """Custom loss computation"""
@@ -47,6 +90,10 @@ class VOTrainer(Trainer):
         """Custom evaluation with pose-specific metrics"""
         eval_dataset = eval_dataset if eval_dataset is not None else self.eval_dataset
         
+        # Print evaluation checkpoint info
+        if hasattr(self.state, 'global_step'):
+            print(f"\nEvaluating checkpoint at step {self.state.global_step}")
+        
         # Run standard evaluation
         eval_results = super().evaluate(eval_dataset, ignore_keys, metric_key_prefix)
         
@@ -57,40 +104,259 @@ class VOTrainer(Trainer):
         return eval_results
     
     def _compute_pose_metrics(self, eval_dataset):
-        """Compute pose-specific evaluation metrics"""
+        """Compute pose-specific evaluation metrics with min_ade and time horizons"""
+        print(f"\nComputing pose metrics...")
+
         self.model.eval()
         
-        total_translation_error = 0.0  # Mean translation error
-        total_accuracy = 0.0           # Translation prediction accuracy
+        # Time horizons for evaluation
+        time_horizons = [5, 10, 30]
+        
+        # Storage for metrics
+        min_ade_metrics = {}
+        translation_errors = []
         num_samples = 0
         
         with torch.no_grad():
             for batch in DataLoader(eval_dataset, batch_size=1, collate_fn=self.data_collator):
                 # Move to device
-                batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+                device = next(self.model.parameters()).device
+                batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
                         for k, v in batch.items()}
                 
                 # Get predictions
                 outputs = self.model(**batch)
+                logits = outputs['logits']
+                
+                # Extract only target pose logits (same as loss computation)
+                # Use the model's stored sequence structure
+                num_image_tokens = self.model.num_image_tokens
+                num_input_pose_tokens = self.model.num_history_pose_tokens
+                num_target_pose_tokens = self.model.num_future_pose_tokens
+                
+                # print(f"eval: num_image_tokens: {num_image_tokens}")
+                # print(f"eval:num_input_pose_tokens: {num_input_pose_tokens}")
+                # print(f"eval:num_target_pose_tokens: {num_target_pose_tokens}")
+                target_start_idx = num_image_tokens + num_input_pose_tokens
+                target_end_idx = target_start_idx + num_target_pose_tokens
+                
+                # Get logits for target positions only
+                target_logits = logits[:, target_start_idx:target_end_idx, :]
+                predicted_tokens = torch.argmax(target_logits, dim=-1)
+                # print(f"eval: predicted tokens: {predicted_tokens.shape}\n {predicted_tokens}")
+                
+                # Convert Qwen token IDs back to pose token IDs (0-1000 range)
+                pose_token_start_id = self.model.pose_token_start_id
+                # print(f"eval: pose_token_start_id: {pose_token_start_id}")
+                # Convert predicted tokens from Qwen vocabulary to pose vocabulary (subtract token id by the offset of pose token start id)
+                predicted_pose_tokens = predicted_tokens - pose_token_start_id
+                # print(f"eval: predicted pose tokens: {predicted_pose_tokens.shape} \n{predicted_pose_tokens}")
+                predicted_pose_tokens = torch.clamp(predicted_pose_tokens, 0, self.pose_tokenizer.vocab_size - 1)
+                
+                gt_pose_tokens = batch['labels'] - pose_token_start_id
+                # print(f"eval: gt pose tokens: {gt_pose_tokens.shape} \n{gt_pose_tokens}")
+                # Convert tokens back to poses using tokenizer
+                pred_poses = self._tokens_to_poses(predicted_pose_tokens, self.pose_tokenizer)
+                gt_poses = self._tokens_to_poses(gt_pose_tokens, self.pose_tokenizer)
+                
+                # Compute min_ade for each time horizon
+                for horizon in time_horizons:
+                    if horizon <= len(pred_poses) and horizon <= len(gt_poses):
+                        min_ade = self._compute_min_ade(pred_poses[:horizon], gt_poses[:horizon])
+                        if f'min_ade_{horizon}' not in min_ade_metrics:
+                            min_ade_metrics[f'min_ade_{horizon}'] = []
+                        min_ade_metrics[f'min_ade_{horizon}'].append(min_ade)
+                
+                # Compute translation error (XY plane only)
+                translation_error = self._compute_translation_error(pred_poses, gt_poses)
+                translation_errors.append(translation_error)
+                
+                num_samples += 1
+
+        
+        # Compute final metrics
+        metrics = {}
+        
+        # Min ADE metrics
+        for horizon in time_horizons:
+            key = f'min_ade_{horizon}'
+            if key in min_ade_metrics and min_ade_metrics[key]:
+                metrics[f'eval_{key}'] = np.mean(min_ade_metrics[key])
+                metrics[f'eval_{key}_std'] = np.std(min_ade_metrics[key])
+        
+        # Translation error metrics
+        if translation_errors:
+            metrics['eval_translation_error'] = np.mean(translation_errors)
+            metrics['eval_translation_error_std'] = np.std(translation_errors)
+            metrics['eval_translation_error_min'] = np.min(translation_errors)
+            metrics['eval_translation_error_max'] = np.max(translation_errors)
+            
+            # Accuracy as percentage of samples with error < threshold
+            threshold = 0.5  # 0.5 meters threshold
+            accuracy = np.mean([err < threshold for err in translation_errors])
+            metrics['eval_translation_accuracy'] = accuracy
+        
+        metrics['eval_num_samples'] = num_samples
+        # print(f"\nComputed metrics for {num_samples} samples: {list(metrics.keys())}")
+        
+        # Log to wandb if available
+
+        if wandb.run is not None:
+            wandb.log(metrics)
+            # print(f"Logged {len(metrics)} evaluation metrics to wandb")
+        print(f"eval metrics:\n {metrics}")
+        return metrics
+    
+    def _tokens_to_poses(self, tokens, tokenizer):
+        """Convert tokenized poses back to continuous poses"""
+        # Convert tokens to numpy and reshape
+        if isinstance(tokens, torch.Tensor):
+            tokens = tokens.cpu().numpy()
+        
+        # Reshape tokens to pose format
+        tokens_reshaped = tokens.reshape(-1, tokenizer.num_joints, tokenizer.pose_dim)
+        
+        # Convert to continuous poses
+        poses = tokenizer.dequantize_pose(tokens_reshaped)
+        
+        return poses
+    
+    def _compute_min_ade(self, pred_poses, gt_poses):
+        """Compute Minimum Average Displacement Error (min_ade)"""
+        # Ensure both sequences have the same length
+        min_len = min(len(pred_poses), len(gt_poses))
+        pred_poses = pred_poses[:min_len]
+        gt_poses = gt_poses[:min_len]
+        
+        # Extract XY coordinates (first 2 dimensions)
+        pred_xy = pred_poses[:, :, :2]  # [T, num_joints, 2]
+        gt_xy = gt_poses[:, :, :2]     # [T, num_joints, 2]
+        
+        # Compute displacement error for each timestep and joint
+        displacement_errors = np.linalg.norm(pred_xy - gt_xy, axis=2)  # [T, num_joints]
+        
+        # Average displacement error over time and joints
+        ade = np.mean(displacement_errors)
+        
+        return ade
+    
+    def _compute_translation_error(self, pred_poses, gt_poses):
+        """Compute translation error in XY plane"""
+        # Ensure both sequences have the same length
+        min_len = min(len(pred_poses), len(gt_poses))
+        pred_poses = pred_poses[:min_len]
+        gt_poses = gt_poses[:min_len]
+        
+        # Extract XY coordinates (first 2 dimensions)
+        pred_xy = pred_poses[:, :, :2]  # [T, num_joints, 2]
+        gt_xy = gt_poses[:, :, :2]     # [T, num_joints, 2]
+        
+        # Compute translation error for each timestep and joint
+        translation_errors = np.linalg.norm(pred_xy - gt_xy, axis=2)  # [T, num_joints]
+        
+        # Return mean translation error
+        return np.mean(translation_errors)
+    
+    def _log_sample_visualizations(self, eval_dataset, num_samples=3):
+        """Log sample images, poses, and predictions to wandb for visualization"""
+            
+        self.model.eval()
+        sample_data = []
+        
+        with torch.no_grad():
+            for i, batch in enumerate(DataLoader(eval_dataset, batch_size=1, collate_fn=self.data_collator)):
+                if i >= num_samples:
+                    break
+                    
+                # Move to device
+                device = next(self.model.parameters()).device
+                batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
+                        for k, v in batch.items()}
+                
+                # Get model outputs
+                outputs = self.model(**batch)
                 predicted_tokens = torch.argmax(outputs['logits'], dim=-1)
                 
-                # Convert to poses and compute metrics
-                # (Implementation would go here)
-                # For now, return dummy metrics
-                total_translation_error += 0.1
-                total_accuracy += 0.8
-                num_samples += 1
+                # Extract sample data for visualization
+                sample = {
+                    'images': batch.get('images', None),
+                    'input_poses': batch.get('input_ids', None),
+                    'predicted_poses': predicted_tokens,
+                    'ground_truth_poses': batch.get('labels', None),
+                    'loss': outputs['loss'].item() if outputs['loss'] is not None else 0.0
+                }
+                sample_data.append(sample)
         
-        metrics = {
-            "eval_translation_error": total_translation_error / num_samples,
-            "eval_translation_accuracy": total_accuracy / num_samples,
-        }
+        # Create wandb visualizations
+        self._create_wandb_visualizations(sample_data)
+    
+    def _create_wandb_visualizations(self, sample_data):
+        """Create and log wandb visualizations for sample data
+        not working now -- wrong way of getting predicted and ground truth poses
+        """
+
+        import matplotlib.pyplot as plt
+        import numpy as np
         
-        # Log to wandb if available and enabled
-        if self.use_wandb and wandb.run is not None:
-            wandb.log(metrics)
+        # Create figure with subplots for each sample
+        fig, axes = plt.subplots(len(sample_data), 4, figsize=(16, 4 * len(sample_data)))
+        if len(sample_data) == 1:
+            axes = axes.reshape(1, -1)
         
-        return metrics
+        for i, sample in enumerate(sample_data):
+            # Sample images (if available)
+            if sample['images'] is not None and sample['images'].shape[0] > 0:
+                # Take first image from the batch and convert to float32
+                img = sample['images'][0, 0].cpu().float().numpy()  # Convert to float32
+                if img.shape[0] == 3:  # CHW format
+                    img = np.transpose(img, (1, 2, 0))
+                img = np.clip(img, 0, 1)
+                axes[i, 0].imshow(img)
+                axes[i, 0].set_title(f'Sample {i+1}: Input Image')
+            else:
+                axes[i, 0].text(0.5, 0.5, 'No Image', ha='center', va='center')
+                axes[i, 0].set_title(f'Sample {i+1}: No Image')
+            
+            # Input poses visualization
+            if sample['input_poses'] is not None:
+                input_poses = sample['input_poses'][0].cpu().float().numpy()  # Convert to float32
+                axes[i, 1].plot(input_poses)
+                axes[i, 1].set_title(f'Sample {i+1}: Input Poses')
+                axes[i, 1].set_xlabel('Token Index')
+                axes[i, 1].set_ylabel('Token Value')
+            else:
+                axes[i, 1].text(0.5, 0.5, 'No Input Poses', ha='center', va='center')
+            
+            # Predicted vs Ground Truth poses
+            if sample['predicted_poses'] is not None and sample['ground_truth_poses'] is not None:
+                pred_poses = sample['predicted_poses'][0].cpu().float().numpy()  # Convert to float32
+                gt_poses = sample['ground_truth_poses'][0].cpu().float().numpy()  # Convert to float32
+                
+                # Plot both on same axes
+                axes[i, 2].plot(pred_poses, label='Predicted', alpha=0.7)
+                axes[i, 2].plot(gt_poses, label='Ground Truth', alpha=0.7)
+                axes[i, 2].set_title(f'Sample {i+1}: Predicted vs GT')
+                axes[i, 2].legend()
+                axes[i, 2].set_xlabel('Token Index')
+                axes[i, 2].set_ylabel('Token Value')
+                
+                # Error visualization
+                error = np.abs(pred_poses - gt_poses)
+                axes[i, 3].bar(range(len(error)), error, alpha=0.7)
+                axes[i, 3].set_title(f'Sample {i+1}: Prediction Error')
+                axes[i, 3].set_xlabel('Token Index')
+                axes[i, 3].set_ylabel('Absolute Error')
+            else:
+                axes[i, 2].text(0.5, 0.5, 'No Predictions', ha='center', va='center')
+                axes[i, 3].text(0.5, 0.5, 'No Error Data', ha='center', va='center')
+        
+        plt.tight_layout()
+        
+        # Log to wandb
+        wandb.log({"eval/sample_visualizations": wandb.Image(fig)})
+        plt.close(fig)
+        print(f"Logged sample visualizations to wandb: {len(sample_data)} samples")
+            
 
 class VOPoseDataCollator:
     """Data collator for Visual Odometry pose data"""
@@ -241,15 +507,21 @@ class NuScenesVOTrainer:
         # Combine all scene datasets
         full_dataset = torch.utils.data.ConcatDataset(all_datasets)
         
-        # Split into train/val
+        # Split into train/val using configurable split ratio
         total_size = len(full_dataset)
-        train_size = int(0.8 * total_size)
+        train_split = self.config['data'].get('train_split', 0.8)  # Default to 80/20 if not specified
+        train_size = int(train_split * total_size)
+        
+        print(f"Total dataset size: {total_size}")
+        print(f"Train size: {train_size}")
+        print(f"Val size: {total_size - train_size}")
         
         train_indices = list(range(train_size))
         val_indices = list(range(train_size, total_size))
         
         self.train_dataset = torch.utils.data.Subset(full_dataset, train_indices)
         self.val_dataset = torch.utils.data.Subset(full_dataset, val_indices)
+
     
     def load_tokenizer_from_checkpoint(self, checkpoint_dir: str):
         """Load tokenizer from a saved checkpoint"""
@@ -287,6 +559,7 @@ class NuScenesVOTrainer:
             report_to="wandb" if self.use_wandb else None,
             remove_unused_columns=False,
             dataloader_pin_memory=False,
+            save_safetensors=False,  # Disable safetensors to avoid shared tensor issues
         )
         
         # Create VOTrainer (inherits from HF Trainer)
@@ -298,13 +571,16 @@ class NuScenesVOTrainer:
             data_collator=data_collator,
         )
         
+        # Pass the pose tokenizer to the trainer
+        trainer.pose_tokenizer = self.pose_tokenizer
+        
         # Check for existing checkpoint
-        checkpoint = get_last_checkpoint(training_args.output_dir)
-        if checkpoint:
-            logger.info(f"Resuming from checkpoint: {checkpoint}")
-            trainer.train(resume_from_checkpoint=checkpoint)
-        else:
-            trainer.train()
+        # checkpoint = get_last_checkpoint(training_args.output_dir)
+        # if checkpoint:
+        #     logger.info(f"Resuming from checkpoint: {checkpoint}")
+        #     trainer.train(resume_from_checkpoint=checkpoint)
+        # else:
+        trainer.train()
         
         # Save final model and tokenizer
         trainer.save_model()

@@ -71,8 +71,8 @@ class VOModel(nn.Module):
             discrete_tokens = [f"<i{v}>" for v in range(pose_vocab_size)]
             tokenizer.add_tokens(discrete_tokens)
             
-            # Store the start index of pose tokens
-            self.pose_token_start_idx = tokenizer.convert_tokens_to_ids("<i0>")
+            # Store the start id of pose tokens
+            self.pose_token_start_id = tokenizer.convert_tokens_to_ids("<i0>")
             
             # Resize the model's embedding layer to accommodate new tokens
             self.llm.resize_token_embeddings(len(tokenizer))
@@ -87,7 +87,7 @@ class VOModel(nn.Module):
             self.llm.config.vocab_size = len(tokenizer)
             self.tokenizer = tokenizer
             
-            logger.info(f"Added {pose_vocab_size} pose tokens starting at index {self.pose_token_start_idx}")
+            logger.info(f"Added {pose_vocab_size} pose tokens starting at index {self.pose_token_start_id}")
         
         # Initialize DINOv2 vision encoder
         self.vision_encoder = DINOv2VisionEncoder(
@@ -109,6 +109,40 @@ class VOModel(nn.Module):
         # Verify DINOv2 is frozen
         if hasattr(self.vision_encoder, 'is_dinov2_frozen'):
             logger.info(f"DINOv2 frozen: {self.vision_encoder.is_dinov2_frozen()}")
+        
+        # Store sequence structure information
+        if config:
+            # Calculate number of image tokens from config
+            num_input_frames = config.get('data', {}).get('num_input_frames')
+            
+            # Get DINOv2 patch size and compute patches per image
+            dinov2_patch_size = self.vision_encoder.dinov2.config.patch_size
+            image_input_size = config.get('image', {}).get('input_size', 256)
+
+            # DINOv2 rounds up images to next multiple of patch_size
+            # So patches = ceil(image_size / patch_size)^2
+            import math
+            patches_per_side = image_input_size // dinov2_patch_size
+            n_patches_per_image = patches_per_side ** 2
+            
+            self.num_image_tokens = num_input_frames * n_patches_per_image
+            
+            logger.info(f"\nImage tokens: {num_input_frames} frames × {n_patches_per_image} patches "
+                       f"(from {image_input_size}x{image_input_size} images, patch_size={dinov2_patch_size}) = {self.num_image_tokens} total")
+            
+            # Calculate number of pose tokens
+            num_input_poses = config.get('data', {}).get('num_input_poses')
+            num_target_poses = config.get('data', {}).get('num_target_poses')
+            pose_dim = config.get('pose', {}).get('pose_dim')
+            num_joints = config.get('pose', {}).get('num_joints')
+            tokens_per_pose = num_joints * pose_dim
+            
+            self.num_history_pose_tokens = num_input_poses * tokens_per_pose
+            self.num_future_pose_tokens = num_target_poses * tokens_per_pose
+            
+            logger.info(f"Sequence structure - Image tokens: {self.num_image_tokens}, "
+                       f"History pose tokens: {self.num_history_pose_tokens}, "
+                       f"Future pose tokens: {self.num_future_pose_tokens}\n")
 
     def forward(self, pixel_values=None, input_ids=None, labels=None, attention_mask=None, images=None, **kwargs):
         """
@@ -127,12 +161,11 @@ class VOModel(nn.Module):
         
         # Step 2: poses -> pose tokenizer -> tokens -> qwen embedding layer -> pose delta embeddings
         # Check for invalid token IDs
-        vocab_size = self.llm.config.vocab_size
-        invalid_tokens = (input_ids < 0) | (input_ids >= vocab_size)
-        if invalid_tokens.any():
-            input_ids = torch.where(invalid_tokens, torch.zeros_like(input_ids), input_ids)
+        # vocab_size = self.llm.config.vocab_size
+        # invalid_tokens = (input_ids < 0) | (input_ids >= vocab_size)
+        # if invalid_tokens.any():
+        #     input_ids = torch.where(invalid_tokens, torch.zeros_like(input_ids), input_ids)
         
-
         pose_embeddings = self.llm.model.embed_tokens(input_ids).to(dtype=torch.bfloat16)
         
         # Step 3: fuse image embeddings and pose delta embeddings
@@ -167,12 +200,14 @@ class VOModel(nn.Module):
             # Apply masking to get only the target pose token predictions
             # The sequence is: [image_tokens, input_pose_tokens, target_pose_placeholders]
             # We only want to predict the target pose tokens, not the image or input pose tokens
-            num_image_tokens = image_embeddings.shape[1]
+
+            # num_image_tokens = image_embeddings.shape[1]
+            # print(f"forward: num_image_tokens: {num_image_tokens}")
             
-            # Get input pose tokens from the actual pose embeddings
-            # The pose embeddings contain both input and target tokens
-            num_target_pose_tokens = labels.shape[1]
-            num_input_pose_tokens = pose_embeddings.shape[2] - num_target_pose_tokens
+            # Use stored sequence structure
+            num_image_tokens = self.num_image_tokens
+            num_input_pose_tokens = self.num_history_pose_tokens
+            num_target_pose_tokens = self.num_future_pose_tokens
             
             # Get logits for target pose positions only
             target_start_idx = num_image_tokens + num_input_pose_tokens
