@@ -28,7 +28,6 @@ class NuScenesDataset():
         save_meta=True
     ):
 
-        logger.info("Loading new NuScenes dataset.")
         self.data_path = data_path
         self.meta_out_path = meta_out_path
         self.num_cams = num_cams
@@ -68,10 +67,9 @@ class NuScenesDataset():
             # print(self.meta_out_path)
             with open(self.meta_out_path, "r") as f:
                 meta_dict = json.load(f)
-            logger.info(f"[Nuscenes] Loaded camera meta from {self.meta_out_path}")
+            # logger.info(f"[Nuscenes] Loaded camera meta from {self.meta_out_path}")
             return meta_dict
-        else:
-            logger.info(f"[Nuscenes] Creating camera meta at {self.meta_out_path}")
+        
         if self.nusc is None:
             self.nusc = NuScenes(
                 version=self.split, dataroot=self.data_path, verbose=True
@@ -158,7 +156,7 @@ class NuScenesDataset():
         for camera in self.camera_list:
             if len(self.meta_dict[camera]["timestamp"]) < num_timestamps:
                 num_timestamps = len(self.meta_dict[camera]["timestamp"])
-        logger.info(f"[Pixel] Min shared scene length: {num_timestamps}")
+        # logger.info(f"[Pixel] Min shared scene length: {num_timestamps}")
         self.scene_total_num_timestamps = num_timestamps
 
         if self.end_timestep == -1:
@@ -170,8 +168,8 @@ class NuScenesDataset():
         self.end_timestep += 1
         self.start_timestep = min(self.start_timestep, self.end_timestep - 1)
 
-        logger.info(f"[Pixel] Start timestep: {self.start_timestep}")
-        logger.info(f"[Pixel] End timestep: {self.end_timestep}")
+        # logger.info(f"[Pixel] Start timestep: {self.start_timestep}")
+        # logger.info(f"[Pixel] End timestep: {self.end_timestep}")
 
         img_filepaths, rel_img_filepaths, feat_filepaths, sky_mask_filepaths = [], [], [], []
         # TODO: support dynamic masks
@@ -255,7 +253,7 @@ class NuScenesPoseDataset:
     
     def __init__(self, nusc_dataset: NuScenesDataset, processor, config):
         self.nusc_dataset = nusc_dataset
-        self.processor = processor
+        self.processor = processor  # Can be None since we don't use it anymore
         self.config = config
         
         
@@ -263,7 +261,7 @@ class NuScenesPoseDataset:
         self.poses = self._extract_poses()
         self.images = self._extract_images()
         
-        logger.info(f"Loaded {len(self.poses)} poses and {len(self.images)} images")
+        # logger.info(f"Loaded {len(self.poses)} poses and {len(self.images)} images")
     
     def _extract_poses(self):
         """Extract poses from NuScenes camera poses"""
@@ -296,12 +294,29 @@ class NuScenesPoseDataset:
         return self.nusc_dataset.img_filepaths
     
     def __len__(self):
-        return len(self.poses)
+        num_input_poses_needed = self.config['data']['num_input_poses'] + 1
+        num_target_poses_needed = self.config['data']['num_target_poses'] + 1
+        
+        # We need enough poses for both input and target
+        total_poses_needed = num_input_poses_needed + num_target_poses_needed
+        
+        if len(self.poses) < total_poses_needed:
+            return 0  # Not enough data for any valid sequences
+        
+        # We can start from idx=0 and go up to the last valid starting point
+        # The last valid idx is: len(self.poses) - total_poses_needed
+        max_valid_idx = len(self.poses) - total_poses_needed
+        
+        return max_valid_idx + 1  # +1 because we include idx=0
     
     def __getitem__(self, idx):
         """Get a single sample"""
+        # Adjust idx to account for the offset in __len__
+        num_input_images_needed = self.config['data']['num_input_frames']
+        actual_idx = idx + num_input_images_needed
+        
         # Load image
-        img_path = self.images[idx]
+        img_path = self.images[actual_idx]
         image = Image.open(img_path).convert('RGB')
         
         # Resize image if specified in config
@@ -324,32 +339,28 @@ class NuScenesPoseDataset:
         
         # For training, we only need input images (9 images) to predict future pose deltas (16 deltas)
         # We don't need target images, only target poses
-        if idx < num_input_images_needed:
-            # Not enough data for a full sequence, return dummy data
-            input_poses = [self.poses[0]] * num_input_poses_needed
-            target_poses = [self.poses[0]] * num_target_poses_needed
-            input_images = [image] * num_input_images_needed
-        else:
-            # Create sequence - only input images and poses
-            start_idx = max(0, idx - num_input_images_needed)
-            input_poses = [self.poses[i] for i in range(start_idx, start_idx + num_input_poses_needed)]
-            target_poses = [self.poses[i] for i in range(start_idx + num_input_poses_needed, start_idx + num_input_poses_needed + num_target_poses_needed)]
-            input_images = []
-            # Only load input images (9 images)
-            for i in range(start_idx, start_idx + num_input_images_needed):
-                img = Image.open(self.images[i]).convert('RGB')
-                if self.config and 'image' in self.config and 'input_size' in self.config['image']:
-                    img = img.resize((self.config['image']['input_size'], self.config['image']['input_size']), Image.Resampling.LANCZOS)
-                input_images.append(img)
         
-        # Step 1: Process images with Qwen2.5-VL processor to get visual tokens
-        # We need to get the visual tokens from the processor
-        processed_inputs = self.processor(
-            images=input_images,
-            text="",  # Empty text - we only want visual tokens
-            return_tensors="pt",
-            padding=True
-        )
+        # Check if we have enough poses for target
+        target_start_idx = idx + num_input_poses_needed
+        target_end_idx = target_start_idx + num_target_poses_needed
+        
+        if target_end_idx > len(self.poses):
+            # Not enough poses for target, skip this sample
+            raise IndexError(f"Not enough poses for target sequence at idx {actual_idx}")
+        
+        # Create sequence - only input images and poses
+        input_poses = [self.poses[i] for i in range(idx, idx + num_input_poses_needed)]
+        target_poses = [self.poses[i] for i in range(target_start_idx, target_end_idx)]
+        input_images = []
+        # Only load input images (9 images)
+        for i in range(idx, idx + num_input_images_needed):
+            img = Image.open(self.images[i]).convert('RGB')
+            if self.config and 'image' in self.config and 'input_size' in self.config['image']:
+                img = img.resize((self.config['image']['input_size'], self.config['image']['input_size']), Image.Resampling.LANCZOS)
+            input_images.append(img)
+        
+        # Step 1: Images will be processed by DINOv2 in the model forward pass
+        # No preprocessing needed here
         
         # Step 2: Tokenize poses using your custom pose delta tokenizer
         input_pose_tokens, target_pose_tokens = self._tokenize_poses_with_config(input_poses, target_poses)
@@ -388,10 +399,10 @@ class NuScenesPoseDataset:
         # print(f"Extended labels shape: {pose_labels.shape}")
         
         return {
-            'pixel_values': processed_inputs['pixel_values'],
-            'input_ids': pose_tokens,  # Input + placeholder tokens (72 tokens)
-            'labels': pose_labels,     # Masked input + target tokens (72 tokens)
+            'input_ids': pose_tokens,  # Pose tokens for Qwen embedding layer
+            'labels': pose_labels,     # Target pose tokens for loss computation
             'attention_mask': pose_attention_mask,
+            'images': input_images,    # Raw images for DINOv2 processing
         }
     
     def _extract_pose_features(self, pose):
@@ -443,12 +454,26 @@ class NuScenesPoseDataset:
         # Extract pose deltas for target poses
         target_deltas = self._extract_pose_deltas(target_poses)
         
+        # Convert to bfloat16 for consistency
+        input_deltas = [delta.astype(np.float32) for delta in input_deltas]  # numpy doesn't support bfloat16
+        target_deltas = [delta.astype(np.float32) for delta in target_deltas]
+        
+        
+        # Get pose token offset from the model's tokenizer
+        # This should be set when the model is initialized with pose tokens
+        pose_token_offset = getattr(self, 'pose_token_offset', 1000)  # Default fallback
+        if hasattr(self, 'model') and hasattr(self.model, 'pose_token_start_idx'):
+            pose_token_offset = self.model.pose_token_start_idx
+        pose_vocab_size = self.config['model']['vocab_size']
+        
         # Tokenize input deltas
         input_tokens = []
         for delta in input_deltas:
             # Quantize delta features
             quantized = np.digitize(delta, quantization_bins) - 1
-            quantized = np.clip(quantized, 0, self.config['model']['vocab_size'] - 1)
+            quantized = np.clip(quantized, 0, pose_vocab_size - 1)
+            # Offset to pose token range
+            quantized = quantized + pose_token_offset
             input_tokens.append(quantized.astype(np.int32))
         
         # Tokenize target deltas
@@ -456,7 +481,9 @@ class NuScenesPoseDataset:
         for delta in target_deltas:
             # Quantize delta features
             quantized = np.digitize(delta, quantization_bins) - 1
-            quantized = np.clip(quantized, 0, self.config['model']['vocab_size'] - 1)
+            quantized = np.clip(quantized, 0, pose_vocab_size - 1)
+            # Offset to pose token range
+            quantized = quantized + pose_token_offset
             target_tokens.append(quantized.astype(np.int32))
         
         # Flatten tokens

@@ -1,236 +1,193 @@
 import torch
 import torch.nn as nn
-from transformers import AutoModel, AutoProcessor
+from transformers import AutoModelForCausalLM
 import math
+from .vision import DINOv2VisionEncoder
+from typing import List, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+def fuse_features(image_features: torch.Tensor, pose_embeddings: torch.Tensor) -> torch.Tensor:
+    """
+    Simple function to fuse DINOv2 image features with pose embeddings.
+    Concatenates image features and pose embeddings together.
+    
+    Args:
+        image_features: DINOv2 image features [batch_size, num_patches, hidden_size]
+        pose_embeddings: Pose embeddings from Qwen model [batch_size, seq_len, hidden_size]
+        
+    Returns:
+        torch.Tensor: Concatenated features [batch_size, num_patches + seq_len, hidden_size]
+    """
+    # print(f"Image features shape: {image_features.shape}")
+    # print(f"Pose embeddings shape: {pose_embeddings.shape}")
+    
+    # Both embeddings should already be in [batch_size, sequence_length, hidden_size] format
+    # Just need to squeeze pose embeddings if they have an extra dimension
+    if pose_embeddings.dim() == 4:
+        pose_embeddings = pose_embeddings.squeeze(1)
+        # print(f"Pose embeddings after squeeze: {pose_embeddings.shape}")
+    
+    # Concatenate along sequence dimension (dim=1)
+    fused_embeddings = torch.cat([image_features, pose_embeddings], dim=1)
+    # print(f"Fused embeddings shape: {fused_embeddings.shape}")
+    return fused_embeddings
 
 class VOModel(nn.Module):
-    """Simplified wrapper for Qwen2.5-VL-3B using standard forward pass"""
+    """
+    Vision Odometry Model implementing the exact flow:
+    images -> dinov2 -> image embeddings
+    poses -> pose tokenizer -> tokens -> qwen embedding layer -> pose delta embeddings
+    fuse image embeddings and pose delta embeddings
+    fused embeddings -> qwen -> logits
+    logits -> masking -> predicted future delta pose logits -> compute cross entropy loss
+    """
 
-    def __init__(self, model_name: str = "Qwen/Qwen2.5-VL-3B-Instruct", vocab_size: int = 1000, config=None):
+    def __init__(self, model_name: str = "Qwen/Qwen2.5-0.5B", vocab_size: int = 1000, config=None):
         super().__init__()
         
         # Store config for reference
         self.user_config = config
 
-        # Load Qwen2.5-VL-3B model - use AutoModel for vision-language models
-        from transformers import AutoModel
-        self.base_model = AutoModel.from_pretrained(
+        # Load Qwen 0.5B model (text-only)
+        self.llm = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16,
+            torch_dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True
         )
         
-        # Add pose prediction head for your custom pose tokens
-        hidden_size = self.base_model.config.hidden_size
-        self.pose_head = nn.Linear(hidden_size, vocab_size)
+        # Add pose tokens to the tokenizer during initialization
+        if config and 'model' in config and 'vocab_size' in config['model']:
+            pose_vocab_size = config['model']['vocab_size']
+            
+            # Get the tokenizer and add pose tokens
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            original_vocab_size = len(tokenizer)
+            
+            # Add pose tokens: ["<i0>", "<i1>", ..., "<i{pose_vocab_size-1}>"]
+            discrete_tokens = [f"<i{v}>" for v in range(pose_vocab_size)]
+            tokenizer.add_tokens(discrete_tokens)
+            
+            # Store the start index of pose tokens
+            self.pose_token_start_idx = tokenizer.convert_tokens_to_ids("<i0>")
+            
+            # Resize the model's embedding layer to accommodate new tokens
+            self.llm.resize_token_embeddings(len(tokenizer))
+            
+            # Initialize new pose token embeddings with small random values
+            embedding_layer = self.llm.get_input_embeddings()
+            with torch.no_grad():
+                new_embeddings = embedding_layer.weight[original_vocab_size:]
+                new_embeddings.normal_(mean=0.0, std=0.02)
+            
+            # Update the model's config
+            self.llm.config.vocab_size = len(tokenizer)
+            self.tokenizer = tokenizer
+            
+            logger.info(f"Added {pose_vocab_size} pose tokens starting at index {self.pose_token_start_idx}")
         
-        # Ensure pose_head uses the same dtype as the base model
-        self.pose_head = self.pose_head.to(dtype=self.base_model.dtype)
+        # Initialize DINOv2 vision encoder
+        self.vision_encoder = DINOv2VisionEncoder(
+            model_name=config.get('vision', {}).get('dinov2_model', 'facebook/dinov2-base') if config else 'facebook/dinov2-base',
+            hidden_size=self.llm.config.hidden_size
+        )
 
-        # The model already has a language modeling head, so we don't need a custom one
-        # We can use the standard forward pass and just adjust the loss computation if needed
+        logger.info(f"Vision Odometry Model initialized")
+        logger.info(f"Qwen model: {model_name}")
+        logger.info(f"DINOv2 model: {config.get('vision', {}).get('dinov2_model', 'facebook/dinov2-base') if config else 'facebook/dinov2-base'}")
+        
+        # Log trainable parameters
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        logger.info(f"Total parameters: {total_params:,}")
+        logger.info(f"Trainable parameters: {trainable_params:,}")
+        logger.info(f"Frozen parameters: {total_params - trainable_params:,}")
+        
+        # Verify DINOv2 is frozen
+        if hasattr(self.vision_encoder, 'is_dinov2_frozen'):
+            logger.info(f"DINOv2 frozen: {self.vision_encoder.is_dinov2_frozen()}")
 
-    def forward(self, pixel_values=None, input_ids=None, labels=None, attention_mask=None, **kwargs):
+    def forward(self, pixel_values=None, input_ids=None, labels=None, attention_mask=None, images=None, **kwargs):
         """
-        Forward pass for pose prediction using Qwen2.5-VL base model.
-        Uses custom pose tokenization instead of text-based approach.
+        Forward pass implementing the exact flow:
+        1. images -> dinov2 -> image embeddings
+        2. poses -> pose tokenizer -> tokens -> qwen embedding layer -> pose delta embeddings
+        3. fuse image embeddings and pose delta embeddings
+        4. fused embeddings -> qwen -> logits
+        5. logits -> masking -> predicted future delta pose logits -> compute cross entropy loss
         """
         
-        # Debug: print all inputs
-        print(f"Model inputs:")
-        print(f"  pixel_values shape: {pixel_values.shape if pixel_values is not None else None}")
-        print(f"  input_ids shape: {input_ids.shape if input_ids is not None else None}")
-        print(f"  labels shape: {labels.shape if labels is not None else None}")
-        print(f"  attention_mask shape: {attention_mask.shape if attention_mask is not None else None}\n")
+        batch_size = input_ids.shape[0]
         
-        # Calculate image grid dimensions for Qwen2.5-VL
-        if pixel_values is not None:
-            batch_size = pixel_values.shape[0]
-            
-            if len(pixel_values.shape) == 3:  # [batch_size, seq_len, hidden_dim]
-                seq_len = pixel_values.shape[1]
-                
-                # For multiple images, we need to calculate grid dimensions per image
-                # Get number of images from config
-                num_images = self.user_config['data']['num_input_frames']
-                patches_per_image = seq_len // num_images
-                
-                # Calculate grid size per image (assuming square patches)
-                grid_size_per_image = int(math.sqrt(patches_per_image))
-                if grid_size_per_image * grid_size_per_image != patches_per_image:
-                    raise ValueError(f"Expected squared patches per image, got {patches_per_image}")
-                
-                # Create image_grid_thw: [num_images, 3] where each row is [temporal, height, width]
-                # For images: temporal=1, height=width=grid_size_per_image
-                image_grid_thw = torch.tensor([[1, grid_size_per_image, grid_size_per_image] for _ in range(num_images)], 
-                                             dtype=torch.long, device=pixel_values.device)
-                
-                print(f"Number of images: {num_images}")
-                print(f"Patches per image: {patches_per_image}")
-                print(f"Grid size per image: {grid_size_per_image}")
-            else:
-                raise ValueError(f"Unexpected pixel_values shape: {pixel_values.shape}")
-        else:
-            image_grid_thw = None
-        print(f"Image grid THW: {image_grid_thw}\n")
+        # Step 1: images -> dinov2 -> image embeddings
+        image_embeddings = self.vision_encoder.extract_features(images).to(dtype=torch.bfloat16)
+        
+        # Step 2: poses -> pose tokenizer -> tokens -> qwen embedding layer -> pose delta embeddings
+        # Check for invalid token IDs
+        vocab_size = self.llm.config.vocab_size
+        invalid_tokens = (input_ids < 0) | (input_ids >= vocab_size)
+        if invalid_tokens.any():
+            input_ids = torch.where(invalid_tokens, torch.zeros_like(input_ids), input_ids)
+        
 
-        print(f"Pixel values: {pixel_values}\n")
+        pose_embeddings = self.llm.model.embed_tokens(input_ids).to(dtype=torch.bfloat16)
         
-        # Fuse image tokens with pose tokens in forward()
-        if pixel_values is not None and input_ids is not None:
-            batch_size = pixel_values.shape[0]
-            
-            # Calculate number of image tokens from the grid
-            # Qwen2.5-VL uses spatial merging, so we need to account for spatial_merge_size
-            if image_grid_thw is not None:
-                # Get spatial_merge_size from the model config
-                spatial_merge_size = self.base_model.config.vision_config.spatial_merge_size
-                
-                # Calculate total image tokens across all images
-                # Each image contributes: (H * W) // spatial_merge_size^2 tokens
-                tokens_per_image = (image_grid_thw[0, 1] * image_grid_thw[0, 2]) // (spatial_merge_size ** 2)
-                num_image_tokens = tokens_per_image * image_grid_thw.shape[0]  # Multiply by number of images
-                
-                print(f"Spatial merge size: {spatial_merge_size}")
-                print(f"Tokens per image: {tokens_per_image}")
-                print(f"Number of images: {image_grid_thw.shape[0]}")
-                print(f"Total image tokens: {num_image_tokens}")
-            else:
-                num_image_tokens = 0
-            
-            # Create image token IDs - use the correct Qwen2.5-VL image token
-            image_token_id = self.base_model.config.image_token_id  # Qwen2.5-VL image token ID
-            image_tokens = torch.full((batch_size, num_image_tokens), image_token_id, 
-                                    dtype=torch.long, device=pixel_values.device)
-            
-            # Debug: check tensor dimensions
-            # print(f"Image tokens shape: {image_tokens.shape}")
-            # print(f"Input IDs shape: {input_ids.shape}")
-            
-            # Ensure input_ids has the same number of dimensions as image_tokens
-            if input_ids.dim() > image_tokens.dim():
-                # If input_ids has more dimensions, squeeze the extra ones
-                while input_ids.dim() > image_tokens.dim():
-                    input_ids = input_ids.squeeze(0)
-            elif input_ids.dim() < image_tokens.dim():
-                # If input_ids has fewer dimensions, add them
-                while input_ids.dim() < image_tokens.dim():
-                    input_ids = input_ids.unsqueeze(0)
-            
-            # print(f"Adjusted input_ids shape: {input_ids.shape}")
-            
-            # Combine image tokens with pose tokens: [image_tokens, pose_tokens]
-            combined_input_ids = torch.cat([image_tokens, input_ids], dim=1)
-            
-            # Update attention mask to include image tokens
-            image_attention_mask = torch.ones((batch_size, num_image_tokens), 
-                                             dtype=torch.long, device=pixel_values.device)
-            
-            # Ensure attention_mask has the same number of dimensions as image_attention_mask
-            if attention_mask.dim() > image_attention_mask.dim():
-                while attention_mask.dim() > image_attention_mask.dim():
-                    attention_mask = attention_mask.squeeze(0)
-            elif attention_mask.dim() < image_attention_mask.dim():
-                while attention_mask.dim() < image_attention_mask.dim():
-                    attention_mask = attention_mask.unsqueeze(0)
-            
-            combined_attention_mask = torch.cat([image_attention_mask, attention_mask], dim=1)
-            
-            print(f"Combined input_ids shape: {combined_input_ids.shape}")
-            print(f"Number of image tokens: {num_image_tokens}")
-            print(f"Number of pose tokens: {input_ids.shape[1]}")
-            
-        else:
-            combined_input_ids = input_ids
-            combined_attention_mask = attention_mask
+        # Step 3: fuse image embeddings and pose delta embeddings
+        fused_embeddings = fuse_features(image_embeddings, pose_embeddings)
         
-        # Use the Qwen2.5-VL base model forward pass
-        outputs = self.base_model(
-            pixel_values=pixel_values,
-            input_ids=combined_input_ids,
-            attention_mask=combined_attention_mask,
-            image_grid_thw=image_grid_thw,
+        # Create attention mask for the combined sequence
+        seq_len = fused_embeddings.shape[1]
+        attention_mask = torch.ones(batch_size, seq_len, device=fused_embeddings.device)
+
+        
+        # Step 4: fused embeddings -> qwen -> logits
+        fused_embeddings = fused_embeddings.to(dtype=torch.bfloat16)
+        
+        
+        outputs = self.llm(
+            inputs_embeds=fused_embeddings,
+            attention_mask=attention_mask,
             output_hidden_states=True
         )
         
-        # Get the last hidden states
-        hidden_states = outputs.last_hidden_state
+        # Get logits directly from Qwen model
+        logits = outputs.logits
         
-        # Apply pose prediction head to all hidden states
-        pose_logits = self.pose_head(hidden_states)
         
-        # Compute loss if labels are provided
+        # Step 5: logits -> masking -> predicted future delta pose logits -> compute cross entropy loss
         loss = None
         if labels is not None:
-            # Labels only contain pose tokens, so we need to extract only the pose token predictions
-            # The input_ids structure is: [image_tokens, pose_tokens]
-            # We need to extract only the pose token predictions for loss computation
+            # Fix labels shape if it's 3D
+            if labels.dim() == 3:
+                labels = labels.squeeze(1)  # Remove middle dimension
             
-            # Use the same calculation as we did for creating image tokens
-            if image_grid_thw is not None:
-                spatial_merge_size = self.base_model.config.vision_config.spatial_merge_size
-                num_image_tokens = (image_grid_thw[0, 1] * image_grid_thw[0, 2]) // (spatial_merge_size ** 2)
-            else:
-                num_image_tokens = 0
+            # Apply masking to get only the target pose token predictions
+            # The sequence is: [image_tokens, input_pose_tokens, target_pose_placeholders]
+            # We only want to predict the target pose tokens, not the image or input pose tokens
+            num_image_tokens = image_embeddings.shape[1]
             
-            # print(f"Loss computation - num_image_tokens: {num_image_tokens}")
-            # print(f"Loss computation - hidden_states shape: {hidden_states.shape}")
-            # print(f"Loss computation - labels shape: {labels.shape}")
-            # print(f"Loss computation - labels content: {labels}")
+            # Get input pose tokens from the actual pose embeddings
+            # The pose embeddings contain both input and target tokens
+            num_target_pose_tokens = labels.shape[1]
+            num_input_pose_tokens = pose_embeddings.shape[2] - num_target_pose_tokens
             
-            # Extract only the pose token predictions (skip image tokens)
-            # hidden_states shape: [batch_size, total_tokens, hidden_dim]
-            # We need to extract the last target_tokens from the sequence
-            # Input: [image_tokens, input_pose_tokens, placeholder_tokens] (324 + 12 + 24 = 360)
-            # Target: [target_pose_tokens] (24 tokens)
-            # We predict the last 24 tokens (placeholder positions)
-            pose_hidden_states = hidden_states[:, num_image_tokens:, :]
-            pose_logits_only = self.pose_head(pose_hidden_states)
+            # Get logits for target pose positions only
+            target_start_idx = num_image_tokens + num_input_pose_tokens
+            target_end_idx = target_start_idx + num_target_pose_tokens
             
-            # Extract only the target token predictions (last 24 tokens)
-            num_target_tokens = labels.shape[-1]  # 24 target tokens
-            target_hidden_states = pose_hidden_states[:, -num_target_tokens:, :]
-            target_logits = self.pose_head(target_hidden_states)
+            target_logits = logits[:, target_start_idx:target_end_idx, :]
             
-            print(f"Hidden states shape: {hidden_states.shape}")
-            print(f"Pose hidden states shape: {pose_hidden_states.shape}")
-            print(f"Pose logits shape: {pose_logits_only.shape}")
-            print(f"Labels shape: {labels.shape}")
-            
-            # print(f"Loss computation - pose_hidden_states shape: {pose_hidden_states.shape}")
-            # print(f"Loss computation - pose_logits_only shape: {pose_logits_only.shape}")
-            
-            # Input sequence: [image_tokens, input_pose_tokens, placeholder_tokens] (729 + 24 + 48 = 801 tokens)
-            # Labels: [masked_input, target_pose_tokens] (24 masked + 48 target = 72 tokens)
-            # We predict all 72 pose tokens, but compute loss only on the last 48 (placeholder positions)
-            
-            # print(f"Pose logits shape: {pose_logits_only.shape}")
-            # print(f"Labels shape: {labels.shape}")
-            
-            # Use target logits and labels (only compute loss on target tokens)
-            pose_logits = target_logits
-            pose_labels = labels
-            
-            # Ensure labels have the same number of dimensions as logits
-            if pose_labels.dim() > pose_logits.dim():
-                while pose_labels.dim() > pose_logits.dim():
-                    pose_labels = pose_labels.squeeze(0)
-            elif pose_labels.dim() < pose_logits.dim():
-                while pose_labels.dim() < pose_logits.dim():
-                    pose_labels = pose_labels.unsqueeze(0)
-            
-            print(f"Final pose_logits shape: {pose_logits.shape}")
-            print(f"Final pose_labels shape: {pose_labels.shape}")
-            print(f"Pose logits flattened: {pose_logits.view(-1, pose_logits.size(-1)).shape}")
-            print(f"Pose labels flattened: {pose_labels.view(-1).shape}")
-            
-            # Compute cross-entropy loss on pose tokens only
+            # Compute cross entropy loss only on target positions
             loss_fct = nn.CrossEntropyLoss()
-            loss = loss_fct(pose_logits.view(-1, pose_logits.size(-1)), pose_labels.view(-1))
-        
+            loss = loss_fct(target_logits.reshape(-1, target_logits.size(-1)), labels.reshape(-1))
+            
+            # print(f"loss: {loss}")
         return {
             'loss': loss,
-            'logits': pose_logits,
+            'logits': logits,
             'hidden_states': outputs.hidden_states if hasattr(outputs, 'hidden_states') else None
         }
+

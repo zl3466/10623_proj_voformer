@@ -27,7 +27,7 @@ def parse_args():
     # Data arguments
     parser.add_argument('--nusc_data_path', type=str, required=True,
                         help='Path to NuScenes dataset')
-    parser.add_argument('--nusc_meta_path', type=str, default='./nusc_meta.json',
+    parser.add_argument('--nusc_meta_path', type=str, default='',
                         help='Path to save/load NuScenes metadata')
     
     # Training arguments

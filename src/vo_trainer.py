@@ -17,7 +17,8 @@ import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 import wandb
-
+from tqdm import tqdm
+from nuscenes.nuscenes import NuScenes
 
 from .train_utils import compute_pose_metrics, plot_training_curves, print_training_summary
 from .nusc_loader import NuScenesDataset, NuScenesPoseDataset
@@ -40,10 +41,6 @@ class VOTrainer(Trainer):
         outputs = model(**inputs)
         loss = outputs['loss']
         
-        # Scale loss by batch size if needed
-        if num_items_in_batch is not None and num_items_in_batch > 1:
-            loss = loss / num_items_in_batch
-            
         return (loss, outputs) if return_outputs else loss
     
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
@@ -102,27 +99,49 @@ class VOPoseDataCollator:
         self.tokenizer = tokenizer
     
     def __call__(self, features):
-        """Collate batch of fused visual and pose data"""
-        # Handle pixel_values properly - don't squeeze if it changes the expected shape
-        pixel_values_list = []
+        """Collate batch of visual and pose data"""
+        # Convert images to tensors for DINOv2 processing
+        batch_images = []
         for item in features:
-            pv = item['pixel_values']
-            # Only squeeze the batch dimension if it's 1, but preserve the sequence structure
-            if pv.dim() > 1 and pv.shape[0] == 1:
-                pv = pv.squeeze(0)
-            pixel_values_list.append(pv)
+            if 'images' in item:
+                # Convert list of PIL images to tensor
+                image_tensors = []
+                for img in item['images']:
+                    # Convert PIL to tensor and normalize
+                    import numpy as np
+                    img_tensor = torch.from_numpy(np.array(img)).float()
+                    if img_tensor.dim() == 3:  # HWC
+                        img_tensor = img_tensor.permute(2, 0, 1) / 255.0  # HWC to CHW
+                    
+                    # Normalize using ImageNet stats (DINOv2 expects this)
+                    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+                    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+                    img_tensor = (img_tensor - mean) / std
+                    image_tensors.append(img_tensor)
+                
+                # Stack images for this sample: [num_images, channels, height, width]
+                sample_images = torch.stack(image_tensors)
+                batch_images.append(sample_images)
         
-        pixel_values = torch.stack(pixel_values_list)
+        # Stack all samples: [batch_size, num_images, channels, height, width]
+        if batch_images:
+            images_tensor = torch.stack(batch_images)
+        else:
+            images_tensor = None
+        
         input_ids = torch.stack([item['input_ids'] for item in features])
         labels = torch.stack([item['labels'] for item in features])
         attention_mask = torch.stack([item['attention_mask'] for item in features])
-    
+        
+        # Convert images to bfloat16
+        if images_tensor is not None:
+            images_tensor = images_tensor.to(dtype=torch.bfloat16)
         
         return {
-            'pixel_values': pixel_values,
             'input_ids': input_ids,
             'labels': labels,
-            'attention_mask': attention_mask
+            'attention_mask': attention_mask,
+            'images': images_tensor
         }
 
 class NuScenesVOTrainer:
@@ -137,7 +156,8 @@ class NuScenesVOTrainer:
         self.nusc_meta_path = nusc_meta_path
         
         # Initialize components
-        self.processor = AutoProcessor.from_pretrained(config['model']['name'])
+        # No need for separate vision processor - everything is handled in the model
+        
         self.pose_tokenizer = PoseDeltaTokenizer(
             num_joints=config['pose']['num_joints'],
             pose_dim=config['pose']['pose_dim'],
@@ -185,22 +205,41 @@ class NuScenesVOTrainer:
     
     def prepare_data(self):
         """Prepare NuScenes datasets"""
-        logger.info("Preparing NuScenes datasets...")
         
-        # Create NuScenes dataset
-        nusc_train = NuScenesDataset(
-            data_path=self.nusc_data_path,
-            meta_out_path=self.nusc_meta_path,
-            num_cams=1,  # Use single camera for simplicity
-            split='v1.0-trainval',
-            scene_idx=0,
-            start_timestep=0,
-            end_timestep=-1,
-            save_meta=True
-        )
+        # Load all scenes from NuScenes dataset
+        all_datasets = []
+
+        max_scenes = 850  # there are 850 scenes in the train-val split
+
+        nusc = NuScenes(version='v1.0-trainval', dataroot=self.nusc_data_path, verbose=True)
+        for scene_idx in tqdm(range(max_scenes)):
+            try:
+                nusc_scene = NuScenesDataset(
+                    data_path=self.nusc_data_path,
+                    meta_out_path="",
+                    num_cams=1,
+                    nusc=nusc,
+                    scene_idx=scene_idx,
+                    save_meta=False)
+                
+                # Create pose dataset wrapper for this scene
+                scene_pose_dataset = NuScenesPoseDataset(nusc_scene, None, self.config)
+                scene_pose_dataset.model = self.model  # Pass model reference for pose token offset
+                
+                # Check if scene has enough samples
+                if len(scene_pose_dataset) > 0:
+                    all_datasets.append(scene_pose_dataset)
+                else:
+                    continue  # Skip this scene and move to next
+                    
+            except Exception as e:
+                continue  # Skip this scene and move to next
         
-        # Create pose dataset wrapper
-        full_dataset = NuScenesPoseDataset(nusc_train, self.processor, self.config)
+        if not all_datasets:
+            raise RuntimeError("No scenes could be loaded from the dataset")
+        
+        # Combine all scene datasets
+        full_dataset = torch.utils.data.ConcatDataset(all_datasets)
         
         # Split into train/val
         total_size = len(full_dataset)
@@ -211,9 +250,6 @@ class NuScenesVOTrainer:
         
         self.train_dataset = torch.utils.data.Subset(full_dataset, train_indices)
         self.val_dataset = torch.utils.data.Subset(full_dataset, val_indices)
-        
-        logger.info(f"Train samples: {len(self.train_dataset)}")
-        logger.info(f"Validation samples: {len(self.val_dataset)}")
     
     def load_tokenizer_from_checkpoint(self, checkpoint_dir: str):
         """Load tokenizer from a saved checkpoint"""
@@ -260,7 +296,6 @@ class NuScenesVOTrainer:
             train_dataset=self.train_dataset,
             eval_dataset=self.val_dataset,
             data_collator=data_collator,
-            processing_class=self.processor,
         )
         
         # Check for existing checkpoint
@@ -289,27 +324,21 @@ class NuScenesVOTrainer:
         return trainer
     
     def predict(self, frames: List[Image.Image], input_poses: List[np.ndarray]) -> List[np.ndarray]:
-        """Predict future poses"""
+        """Predict future poses using DINOv2 + Qwen 0.5B with the new flow"""
         self.model.eval()
         
         with torch.no_grad():
-            # Process input
-            processed_inputs = self.processor(
-                images=frames,
-                return_tensors="pt",
-                padding=True
-            )
-            
             # Tokenize input poses
             input_pose_tokens = self.pose_tokenizer.tokenize_sequence(input_poses)
             input_tokens = np.concatenate([tokens.flatten() for tokens in input_pose_tokens])
             input_tokens = torch.tensor(input_tokens, dtype=torch.long).unsqueeze(0).to(self.device)
             
-            # Move to device
-            pixel_values = processed_inputs['pixel_values'].to(self.device)
-            
-            # Generate predictions
-            outputs = self.model(pixel_values=pixel_values, input_ids=input_tokens)
+            # Generate predictions using the model
+            # The model handles: images->dinov2->embeddings, poses->tokenizer->tokens->qwen_embeddings
+            outputs = self.model(
+                input_ids=input_tokens,  # Pose tokens
+                images=frames  # Raw images for DINOv2 processing
+            )
             
             # Get predicted tokens
             predicted_tokens = torch.argmax(outputs['logits'], dim=-1)

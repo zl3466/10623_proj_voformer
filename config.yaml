@@ -2,15 +2,21 @@
 
 # Model configuration
 model:
-  name: "Qwen/Qwen2.5-VL-3B-Instruct"
+  name: "Qwen/Qwen2.5-0.5B"  # Changed to Qwen 0.5B
   vocab_size: 1000
+
+# Vision configuration for DINOv2
+vision:
+  dinov2_model: "facebook/dinov2-base"  # DINOv2 model for vision processing
+  hidden_size: 768  # DINOv2 hidden size
+  num_patches_per_image: 196  # 14x14 patches for 224x224 images
 
 # Data configuration
 data:
   dir: "/home/zl3466/Documents/dataset/NuScenes"
-  num_input_frames: 3      # 8 input translation deltas (requires 9 images)
-  num_input_poses: 3       # 8 input translation deltas (requires 9 poses)
-  num_target_poses: 6     # 16 target translation deltas to predict (requires 17 poses)
+  num_input_frames: 4      # 8 input translation deltas (requires 9 images)
+  num_input_poses: 4       # 8 input translation deltas (requires 9 poses)
+  num_target_poses: 8     # 16 target translation deltas to predict (requires 17 poses)
 
 # Training configuration
 training:
@@ -24,9 +30,9 @@ training:
   eval_steps: 500
   max_grad_norm: 1.0
   weight_decay: 0.01
-  use_wandb: false
+  use_wandb: true
   wandb_project: "visual-odometry"
-  wandb_run_name: "qwen25-vl-3b-translation-deltas"
+  wandb_run_name: "qwen25-0.5B-translation-deltas"
 
 # Pose configuration
 pose:
