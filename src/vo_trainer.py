@@ -35,15 +35,10 @@ class VOTrainer(Trainer):
     """Custom trainer for Visual Odometry with pose-specific metrics"""
     
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=1):
-        # print(inputs)
-        """Custom loss computation"""
+        """Custom loss computation for pose delta prediction"""
         outputs = model(**inputs)
         loss = outputs['loss']
         
-        # Scale loss by batch size if needed
-        if num_items_in_batch is not None and num_items_in_batch > 1:
-            loss = loss / num_items_in_batch
-            
         return (loss, outputs) if return_outputs else loss
     
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
@@ -96,13 +91,13 @@ class VOTrainer(Trainer):
         return metrics
 
 class VOPoseDataCollator:
-    """Data collator for Visual Odometry pose data"""
+    """Data collator for Visual Odometry pose data using Qwen VL tokenizer"""
     
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
     
     def __call__(self, features):
-        """Collate batch of pose data using custom pose tokenization"""
+        """Collate batch of pose data using Qwen VL tokenization"""
         # Handle pixel_values properly - don't squeeze if it changes the expected shape
         pixel_values_list = []
         for item in features:
@@ -116,11 +111,14 @@ class VOPoseDataCollator:
         input_ids = torch.stack([item['input_ids'] for item in features])
         labels = torch.stack([item['labels'] for item in features])
         
+        # Create attention mask for Qwen VL tokenizer
+        attention_mask = torch.ones_like(input_ids)
+        
         return {
             'pixel_values': pixel_values,
             'input_ids': input_ids,
             'labels': labels,
-            'attention_mask': torch.ones_like(input_ids)  # Simple attention mask for pose tokens
+            'attention_mask': attention_mask
         }
 
 class NuScenesVOTrainer:
@@ -136,13 +134,11 @@ class NuScenesVOTrainer:
         
         # Initialize components
         self.processor = AutoProcessor.from_pretrained(config['model']['name'])
-        self.pose_tokenizer = PoseDeltaTokenizer(
-            num_joints=config['pose']['num_joints'],
-            pose_dim=config['pose']['pose_dim'],
-            vocab_size=config['model']['vocab_size']
-        )
         
-        # Initialize model
+        # Get tokenizer from processor (Qwen VL's tokenizer)
+        self.tokenizer = self.processor.tokenizer
+        
+        # Initialize model (now includes Qwen VL tokenizer)
         self.model = VOModel(config['model']['name'], config['model']['vocab_size'], config)
         
         # Setup device
@@ -225,8 +221,8 @@ class NuScenesVOTrainer:
         """Train using Hugging Face Trainer"""
         logger.info("Starting training with Hugging Face Trainer...")
         
-        # Create data collator
-        data_collator = VOPoseDataCollator(tokenizer=self.pose_tokenizer)
+        # Create data collator using Qwen VL tokenizer
+        data_collator = VOPoseDataCollator(tokenizer=self.tokenizer)
         
         # Setup training arguments
         training_args = TrainingArguments(
@@ -271,8 +267,8 @@ class NuScenesVOTrainer:
         
         # Save final model and tokenizer
         trainer.save_model()
-        # save tokenizer configuration
-        self.pose_tokenizer.save_pretrained(training_args.output_dir)
+        # Save Qwen VL tokenizer
+        self.tokenizer.save_pretrained(training_args.output_dir)
         
         logger.info(f"Training completed! Model saved to {training_args.output_dir}")
         
@@ -287,76 +283,45 @@ class NuScenesVOTrainer:
         return trainer
     
     def predict(self, frames: List[Image.Image], input_poses: List[np.ndarray]) -> List[np.ndarray]:
-        """Predict future poses"""
+        """Predict future poses using Qwen VL's native generation"""
         self.model.eval()
         
         with torch.no_grad():
-            # Process input
-            processed_inputs = self.processor(
-                images=frames,
-                return_tensors="pt",
-                padding=True
-            )
-            
-            # Tokenize input poses
-            input_pose_tokens = self.pose_tokenizer.tokenize_sequence(input_poses)
-            input_tokens = np.concatenate([tokens.flatten() for tokens in input_pose_tokens])
-            input_tokens = torch.tensor(input_tokens, dtype=torch.long).unsqueeze(0).to(self.device)
+            # Process input using the model's processor
+            processed_inputs = self.model.process_inputs(frames, input_poses)
             
             # Move to device
-            pixel_values = processed_inputs['pixel_values'].to(self.device)
+            inputs = {k: v.to(self.device) for k, v in processed_inputs.items()}
             
-            # Generate predictions
-            outputs = self.model(pixel_values=pixel_values, input_ids=input_tokens)
+            # Generate predictions using custom forward pass
+            outputs = self.model(**inputs)
             
-            # Get predicted tokens
+            # Get predicted tokens from custom pose head
             predicted_tokens = torch.argmax(outputs['logits'], dim=-1)
             predicted_tokens = predicted_tokens.cpu().numpy().squeeze()
             
-            # Convert back to poses
-            num_target_poses = self.config['data']['num_target_poses']
-            tokens_per_pose = self.pose_tokenizer.num_joints * self.pose_tokenizer.pose_dim
-            target_tokens = predicted_tokens[-num_target_poses * tokens_per_pose:]
+            # Decode predicted tokens back to text
+            predicted_text = self.tokenizer.decode(predicted_tokens, skip_special_tokens=True)
             
-            # Reshape and convert to poses
-            target_poses = []
-            for i in range(num_target_poses):
-                start_idx = i * tokens_per_pose
-                end_idx = (i + 1) * tokens_per_pose
-                pose_tokens = target_tokens[start_idx:end_idx].reshape(
-                    self.pose_tokenizer.num_joints, self.pose_tokenizer.pose_dim
-                )
-                pose = self.pose_tokenizer.dequantize_pose(pose_tokens)
-                target_poses.append(pose)
+            # Parse the text back to pose values
+            try:
+                pose_values = [float(x) for x in predicted_text.split()]
+                num_target_poses = self.config['data']['num_target_poses']
+                target_poses = []
+                
+                # Reshape into poses (assuming 3D translation)
+                for i in range(num_target_poses):
+                    start_idx = i * 3  # 3D translation
+                    if start_idx + 3 <= len(pose_values):
+                        pose = np.array(pose_values[start_idx:start_idx + 3])
+                        target_poses.append(pose)
+                    else:
+                        target_poses.append(np.zeros(3))  # Default pose
+                        
+            except (ValueError, IndexError):
+                # Fallback to zero poses if parsing fails
+                num_target_poses = self.config['data']['num_target_poses']
+                target_poses = [np.zeros(3) for _ in range(num_target_poses)]
             
             return target_poses
 
-def main():
-    """Example usage of NuScenes VO trainer"""
-    
-    # Create configuration
-    config = VOTrainingConfig(
-        model_name="Qwen/Qwen2.5-0.5B",
-        output_dir="./vo_output",
-        num_epochs=5,
-        batch_size=2,
-        learning_rate=1e-5
-    )
-    
-    # Initialize trainer with NuScenes paths
-    trainer = NuScenesVOTrainer(
-        config=config,
-        nusc_data_path="/home/zl3466/Documents/dataset/NuScenes",
-        nusc_meta_path="./nusc_meta.json"
-    )
-    
-    # Prepare data
-    trainer.prepare_data()
-    
-    # Train model
-    trainer.train()
-    
-    logger.info("Training completed!")
-
-if __name__ == "__main__":
-    main()

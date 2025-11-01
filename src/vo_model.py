@@ -2,9 +2,10 @@ import torch
 import torch.nn as nn
 from transformers import AutoModel, AutoProcessor
 import math
+import numpy as np
 
 class VOModel(nn.Module):
-    """Simplified wrapper for Qwen2.5-VL-3B using standard forward pass"""
+    """VOModel for pose delta prediction with custom cross-entropy loss"""
 
     def __init__(self, model_name: str = "Qwen/Qwen2.5-VL-3B-Instruct", vocab_size: int = 1000, config=None):
         super().__init__()
@@ -12,8 +13,8 @@ class VOModel(nn.Module):
         # Store config for reference
         self.user_config = config
 
-        # Load Qwen2.5-VL-3B model - use AutoModel for vision-language models
-        from transformers import AutoModel
+        # Load Qwen2.5-VL-3B base model (without LM head for custom processing)
+        from transformers import AutoModel, AutoProcessor
         self.base_model = AutoModel.from_pretrained(
             model_name,
             torch_dtype=torch.float16,
@@ -21,113 +22,99 @@ class VOModel(nn.Module):
             trust_remote_code=True
         )
         
-        # Add pose prediction head for your custom pose tokens
+        # Load Qwen VL processor for tokenization
+        self.processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+        
+        # Get the tokenizer from processor
+        self.tokenizer = self.processor.tokenizer
+        
+        # Custom pose prediction head for 48 output tokens (16 poses × 3 tokens each)
         hidden_size = self.base_model.config.hidden_size
         self.pose_head = nn.Linear(hidden_size, vocab_size)
+        
+        # Store vocab size
+        self.vocab_size = vocab_size
 
-        # The model already has a language modeling head, so we don't need a custom one
-        # We can use the standard forward pass and just adjust the loss computation if needed
+    def process_inputs(self, images, poses):
+        """Process images and poses using Qwen VL's processor"""
+        # Convert poses to text representation
+        pose_texts = []
+        for pose in poses:
+            if isinstance(pose, np.ndarray):
+                pose_values = pose.tolist()
+            else:
+                pose_values = pose
+            
+            # Create text representation of pose
+            pose_text = " ".join([f"{val:.4f}" for val in pose_values])
+            pose_texts.append(pose_text)
+        
+        # Use Qwen VL's processor to handle both images and text
+        processed = self.processor(
+            images=images,
+            text=pose_texts,
+            return_tensors="pt",
+            padding=True
+        )
+        
+        return processed
 
     def forward(self, pixel_values=None, input_ids=None, labels=None, attention_mask=None, **kwargs):
         """
-        Forward pass for pose prediction using Qwen2.5-VL base model.
-        Uses custom pose tokenization instead of text-based approach.
+        Custom forward pass for pose delta prediction.
+        Computes cross-entropy loss between predicted and ground truth pose tokens.
         """
         
-        # Debug: print all inputs
-        print(f"Model inputs:")
-        print(f"  pixel_values shape: {pixel_values.shape if pixel_values is not None else None}")
-        print(f"  input_ids shape: {input_ids.shape if input_ids is not None else None}")
-        print(f"  labels shape: {labels.shape if labels is not None else None}")
-        print(f"  attention_mask shape: {attention_mask.shape if attention_mask is not None else None}\n")
-        
-        # Calculate image grid dimensions for Qwen2.5-VL
-        if pixel_values is not None:
-            batch_size = pixel_values.shape[0]
-            
-            if len(pixel_values.shape) == 3:  # [batch_size, seq_len, hidden_dim]
-                seq_len = pixel_values.shape[1]
-                grid_size = int(math.sqrt(seq_len))
-                if grid_size * grid_size != seq_len:
-                    raise ValueError(f"Expected squared sequence length, got {seq_len}")
-                
-                image_grid_thw = torch.tensor([[1, grid_size, grid_size] for _ in range(batch_size)], 
-                                             dtype=torch.long, device=pixel_values.device)
-            else:
-                raise ValueError(f"Unexpected pixel_values shape: {pixel_values.shape}")
-        else:
-            image_grid_thw = None
-        print(f"Image grid THW: {image_grid_thw}\n")
-
-        print(f"Pixel values: {pixel_values}\n")
-        
-        # For Qwen2.5-VL with custom pose tokens, we need to create a combined input sequence
-        # that includes image tokens + pose tokens
-        if pixel_values is not None and input_ids is not None:
-            batch_size = pixel_values.shape[0]
-            
-            # Calculate number of image tokens from the grid
-            if image_grid_thw is not None:
-                num_image_tokens = image_grid_thw[0, 1] * image_grid_thw[0, 2]  # H * W
-            else:
-                num_image_tokens = 0
-            
-            # Create image token IDs - use the correct Qwen2.5-VL image token
-            image_token_id = 151645  # Qwen2.5-VL image token ID
-            image_tokens = torch.full((batch_size, num_image_tokens), image_token_id, 
-                                    dtype=torch.long, device=pixel_values.device)
-            
-            # Combine image tokens with pose tokens: [image_tokens, pose_tokens]
-            combined_input_ids = torch.cat([image_tokens, input_ids], dim=1)
-            
-            # Update attention mask to include image tokens
-            image_attention_mask = torch.ones((batch_size, num_image_tokens), 
-                                             dtype=torch.long, device=pixel_values.device)
-            combined_attention_mask = torch.cat([image_attention_mask, attention_mask], dim=1)
-            
-            print(f"Combined input_ids shape: {combined_input_ids.shape}")
-            print(f"Number of image tokens: {num_image_tokens}")
-            print(f"Number of pose tokens: {input_ids.shape[1]}")
-            
-        else:
-            combined_input_ids = input_ids
-            combined_attention_mask = attention_mask
-        
-        # Use the Qwen2.5-VL base model forward pass
+        # Use Qwen2.5-VL base model for feature extraction
         outputs = self.base_model(
             pixel_values=pixel_values,
-            input_ids=combined_input_ids,
-            attention_mask=combined_attention_mask,
-            image_grid_thw=image_grid_thw,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
             output_hidden_states=True
         )
         
-        # Get the last hidden states
+        # Get hidden states from the last layer
         hidden_states = outputs.last_hidden_state
         
-        # Apply pose prediction head
+        # Apply custom pose prediction head
         pose_logits = self.pose_head(hidden_states)
         
-        # Compute loss if labels are provided
+        # Compute custom cross-entropy loss for pose tokens
         loss = None
         if labels is not None:
-            # We need to extract only the pose token predictions (skip image tokens)
-            if pixel_values is not None and input_ids is not None and image_grid_thw is not None:
-                num_image_tokens = image_grid_thw[0, 1] * image_grid_thw[0, 2]  # H * W
+            # For pose delta prediction, we want to predict the next 48 tokens
+            # (16 poses × 3 tokens each)
+            
+            # Extract only the pose token positions for loss computation
+            # Assuming input_ids contains the input pose tokens and we want to predict the next 48 tokens
+            
+            # Get the last 48 positions of the sequence for pose prediction
+            batch_size, seq_len, vocab_size = pose_logits.shape
+            
+            # We want to predict the next 48 tokens after the input sequence
+            if seq_len >= 48:
+                # Take the last 48 positions for pose prediction
+                pose_logits_pred = pose_logits[:, -48:, :]  # [batch_size, 48, vocab_size]
+                pose_labels = labels[:, -48:]  # [batch_size, 48]
                 
-                # Extract only the pose token predictions (skip image tokens)
-                pose_hidden_states = hidden_states[:, num_image_tokens:, :]
-                pose_logits = self.pose_head(pose_hidden_states)
+                # Compute cross-entropy loss
+                loss_fct = nn.CrossEntropyLoss()
+                loss = loss_fct(
+                    pose_logits_pred.reshape(-1, vocab_size), 
+                    pose_labels.reshape(-1)
+                )
             else:
-                pose_logits = self.pose_head(hidden_states)
-            
-            # Shift logits and labels for next-token prediction
-            shift_logits = pose_logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            
-            # Compute cross-entropy loss
-            loss_fct = nn.CrossEntropyLoss()
-            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+                # If sequence is shorter than 48, pad or handle differently
+                # For now, compute loss on available positions
+                available_len = min(seq_len, 48)
+                pose_logits_pred = pose_logits[:, -available_len:, :]
+                pose_labels = labels[:, -available_len:]
+                
+                loss_fct = nn.CrossEntropyLoss()
+                loss = loss_fct(
+                    pose_logits_pred.reshape(-1, vocab_size), 
+                    pose_labels.reshape(-1)
+                )
         
         return {
             'loss': loss,

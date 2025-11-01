@@ -251,13 +251,15 @@ class NuScenesDataset():
 
 
 class NuScenesPoseDataset:
-    """Dataset wrapper for NuScenes data with pose prediction"""
+    """Dataset wrapper for NuScenes data with pose prediction using Qwen VL tokenizer"""
     
     def __init__(self, nusc_dataset: NuScenesDataset, processor, config):
         self.nusc_dataset = nusc_dataset
         self.processor = processor
         self.config = config
         
+        # Get tokenizer from processor
+        self.tokenizer = processor.tokenizer
         
         # Extract poses from camera poses (ego poses)
         self.poses = self._extract_poses()
@@ -343,22 +345,50 @@ class NuScenesPoseDataset:
                     img = img.resize((self.config['image']['input_size'], self.config['image']['input_size']), Image.Resampling.LANCZOS)
                 input_images.append(img)
         
-        # Process images with Qwen2.5-VL processor
-        # For visual odometry, we don't need text input, so we pass an empty string
+        # Convert poses to text representation
+        input_pose_texts = self._poses_to_text(input_poses)
+        target_pose_texts = self._poses_to_text(target_poses)
+        
+        # Process images and input pose text using Qwen VL's processor
         processed_inputs = self.processor(
             images=input_images,
-            text="",  # Empty text for visual odometry task
+            text=input_pose_texts,
             return_tensors="pt",
             padding=True
         )
         
-        # Tokenize poses using your custom pose tokenizer
-        input_tokens, target_tokens = self._tokenize_poses_with_config(input_poses, target_poses)
+        # Process target poses for labels (48 tokens: 16 poses × 3 tokens each)
+        target_processed = self.processor(
+            text=target_pose_texts,
+            return_tensors="pt",
+            padding=True
+        )
+        
+        # Create combined input_ids: [input_pose_tokens, target_pose_tokens]
+        # This allows the model to see the input context and predict the target
+        input_ids = processed_inputs['input_ids']
+        target_ids = target_processed['input_ids']
+        
+        # Combine input and target for training
+        combined_input_ids = torch.cat([input_ids, target_ids], dim=1)
+        
+        # Create labels: shift the target tokens for next-token prediction
+        # Labels should be the target tokens shifted by 1
+        labels = torch.cat([
+            torch.full_like(input_ids, -100),  # Don't compute loss on input tokens
+            target_ids  # Compute loss on target tokens
+        ], dim=1)
+        
+        # Create attention mask for combined sequence
+        input_attention_mask = processed_inputs['attention_mask']
+        target_attention_mask = target_processed['attention_mask']
+        combined_attention_mask = torch.cat([input_attention_mask, target_attention_mask], dim=1)
         
         return {
             'pixel_values': processed_inputs['pixel_values'],
-            'input_ids': torch.tensor(input_tokens, dtype=torch.long),
-            'labels': torch.tensor(target_tokens, dtype=torch.long),
+            'input_ids': combined_input_ids,
+            'labels': labels,
+            'attention_mask': combined_attention_mask
         }
     
     def _extract_pose_features(self, pose):
@@ -395,8 +425,60 @@ class NuScenesPoseDataset:
         
         return deltas
     
+    def _poses_to_text(self, poses):
+        """Convert poses to text representation"""
+        pose_texts = []
+        deltas = self._extract_pose_deltas(poses)
+        
+        for delta in deltas:
+            # Create text representation of pose delta
+            pose_text = " ".join([f"{val:.4f}" for val in delta])
+            pose_texts.append(pose_text)
+        
+        return pose_texts
+    
+    def _tokenize_poses_with_qwen_tokenizer(self, input_poses, target_poses):
+        """Tokenize pose deltas using Qwen VL's tokenizer"""
+        # Extract pose deltas for input poses
+        input_deltas = self._extract_pose_deltas(input_poses)
+        
+        # Extract pose deltas for target poses
+        target_deltas = self._extract_pose_deltas(target_poses)
+        
+        # Convert poses to text representation
+        input_texts = []
+        for delta in input_deltas:
+            # Create text representation of pose delta
+            pose_text = " ".join([f"{val:.4f}" for val in delta])
+            input_texts.append(pose_text)
+        
+        target_texts = []
+        for delta in target_deltas:
+            # Create text representation of pose delta
+            pose_text = " ".join([f"{val:.4f}" for val in delta])
+            target_texts.append(pose_text)
+        
+        # Tokenize using Qwen VL's tokenizer
+        input_tokenized = self.tokenizer(
+            input_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512
+        )
+        
+        target_tokenized = self.tokenizer(
+            target_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512
+        )
+        
+        return input_tokenized['input_ids'], target_tokenized['input_ids']
+    
     def _tokenize_poses_with_config(self, input_poses, target_poses):
-        """Tokenize pose deltas using VOTrainingConfig parameters"""
+        """Tokenize pose deltas using VOTrainingConfig parameters (legacy method)"""
         # Create quantization bins based on config
         quantization_bins = np.linspace(
             -self.config['pose']['quantization_range'],
