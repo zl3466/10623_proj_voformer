@@ -1,0 +1,99 @@
+"""
+DINOv2 vision processing wrappers for visual odometry tasks.
+Contains only DINOv2-related components for image feature extraction.
+"""
+
+import torch
+import torch.nn as nn
+from transformers import AutoModel
+from PIL import Image
+import numpy as np
+from typing import List, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+class DINOv2VisionEncoder(nn.Module):
+    """
+    DINOv2-based vision encoder for extracting image features.
+    This replaces the built-in vision processing of Qwen2.5-VL models.
+    """
+    
+    def __init__(self, model_name: str = "facebook/dinov2-base", hidden_size: int = 768):
+        super().__init__()
+        
+        # Load DINOv2 model
+        self.dinov2 = AutoModel.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            device_map="auto",
+            trust_remote_code=True
+        )
+        
+        # Freeze DINOv2 model - don't train its parameters
+        for param in self.dinov2.parameters():
+            param.requires_grad = False
+        
+        # Set DINOv2 to eval mode to ensure no dropout/batch norm updates
+        self.dinov2.eval()
+        
+        # Get DINOv2's hidden size
+        self.dinov2_hidden_size = self.dinov2.config.hidden_size
+        
+        # Projection layer to match Qwen's hidden size (this will be trained)
+        self.projection = nn.Linear(self.dinov2_hidden_size, hidden_size)
+        
+        # Ensure projection layer uses the same dtype as DINOv2
+        self.projection = self.projection.to(dtype=torch.float16)
+        
+        logger.info(f"DINOv2 Vision Encoder initialized with hidden size: {hidden_size}")
+        logger.info(f"DINOv2 model: {model_name}")
+    
+    def extract_features(self, images) -> torch.Tensor:
+        """
+        Extract DINOv2 features from images.
+        
+        Args:
+            images: Tensor of shape [batch_size, num_images, channels, height, width]
+            
+        Returns:
+            torch.Tensor: DINOv2 features of shape [batch_size, sequence_length, hidden_size]
+        """
+
+        # Process images with DINOv2
+        # Handle tensor input: [batch_size, num_images, channels, height, width]
+        if isinstance(images, torch.Tensor):
+            batch_size, num_images, channels, height, width = images.shape
+            
+            # Reshape to [batch_size * num_images, channels, height, width] for DINOv2 processing
+            batch_images = images.view(batch_size * num_images, channels, height, width)
+            batch_images = batch_images.to(self.dinov2.device)
+            
+            # Extract features using DINOv2 (frozen, so use no_grad)
+            with torch.no_grad():
+                outputs = self.dinov2(batch_images)
+            
+            # Get patch features (excluding CLS token)
+            patch_features = outputs.last_hidden_state[:, 1:, :]  # Remove CLS token
+            
+            # Project to target hidden size (trainable, so outside no_grad)
+            projected_features = self.projection(patch_features)
+            
+            # Reshape back to [batch_size, num_images, n_patches, hidden_size]
+            n_patches = projected_features.shape[1]
+            
+            # Log actual patches per image (may differ from theoretical calculation)
+            # patches_per_image = n_patches // num_images if num_images > 0 else n_patches
+            # print(f"Vision encoder: {num_images} images × {patches_per_image} patches/image = {n_patches} total patches")
+            hidden_size = projected_features.shape[2]
+            projected_features = projected_features.view(batch_size, num_images, n_patches, hidden_size)
+            
+            # Flatten multiple images into a single sequence
+            # [batch_size, num_images, n_patches, hidden_size] -> [batch_size, num_images * n_patches, hidden_size]
+            projected_features = projected_features.view(batch_size, num_images * n_patches, hidden_size)
+            # print(f"converted projected_features shape: {projected_features.shape}")
+            
+        else:
+            raise ValueError(f"Expected tensor input, got {type(images)}")
+        
+        return projected_features
