@@ -65,8 +65,15 @@ class VOModel(nn.Module):
         
         # Check if we're in distributed training mode
         # If using DDP, don't use device_map (let Trainer handle device placement)
-        import torch.distributed as dist
-        use_device_map = not (dist.is_available() and dist.is_initialized())
+        # Check environment variables set by torchrun/accelerate/distributed launchers
+        import os
+        is_distributed = (
+            os.getenv("WORLD_SIZE") is not None or
+            os.getenv("RANK") is not None or
+            os.getenv("LOCAL_RANK") is not None or
+            os.getenv("MASTER_ADDR") is not None
+        )
+        use_device_map = not is_distributed
         
         # Try to use flash attention for faster training
         try:
@@ -77,7 +84,10 @@ class VOModel(nn.Module):
                 trust_remote_code=True,
                 attn_implementation="flash_attention_2"
             )
-            logger.info("Using flash_attention_2 for faster training")
+            if use_device_map:
+                logger.info("Using flash_attention_2 for faster training")
+            else:
+                logger.info("Using flash_attention_2 with distributed training (device_map=None)")
         except (ValueError, ImportError) as e:
             logger.warning(f"Flash attention not available ({e}), falling back to default attention")
             self.llm = AutoModelForCausalLM.from_pretrained(

@@ -24,8 +24,15 @@ class DINOv2VisionEncoder(nn.Module):
         
         # Check if we're in distributed training mode
         # If using DDP, don't use device_map (let Trainer handle device placement)
-        import torch.distributed as dist
-        use_device_map = not (dist.is_available() and dist.is_initialized())
+        # Check environment variables set by torchrun/accelerate/distributed launchers
+        import os
+        is_distributed = (
+            os.getenv("WORLD_SIZE") is not None or
+            os.getenv("RANK") is not None or
+            os.getenv("LOCAL_RANK") is not None or
+            os.getenv("MASTER_ADDR") is not None
+        )
+        use_device_map = not is_distributed
         
         # Load DINOv2 model
         self.dinov2 = AutoModel.from_pretrained(
