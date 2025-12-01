@@ -1,4 +1,21 @@
 #!/bin/bash
+# Clear any distributed environment variables
+unset NCCL_ALGO
+unset NCCL_PROTO
+unset NCCL_MIN_NCHANNELS
+unset NCCL_CUMEM_ENABLE
+
+unset WORLD_SIZE
+unset RANK
+unset LOCAL_RANK
+unset MASTER_ADDR
+unset MASTER_PORT
+# Also clear SLURM variables
+unset SLURM_PROCID
+unset SLURM_LOCALID
+unset SLURM_NTASKS
+unset SLURM_NPROCS
+
 source /lustre/fsw/portfolios/nvr/users/ymingli/miniconda3/etc/profile.d/conda.sh
 conda activate voformer
 export WANDB_API_KEY="de2b136779280d18cb6d59d1a23248b5010833f8"

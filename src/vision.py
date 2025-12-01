@@ -22,11 +22,19 @@ class DINOv2VisionEncoder(nn.Module):
     def __init__(self, model_name: str = "facebook/dinov2-base", hidden_size: int = 768):
         super().__init__()
         
+        # Detect distributed training (torchrun sets LOCAL_RANK)
+        import os
+        local_rank = os.getenv("LOCAL_RANK")
+        is_distributed = local_rank is not None
+        
+        # Use device_map="auto" for single GPU, None for distributed (Trainer handles placement)
+        device_map = None if is_distributed else "auto"
+        
         # Load DINOv2 model
         self.dinov2 = AutoModel.from_pretrained(
             model_name,
             torch_dtype=torch.float16,
-            device_map="auto",
+            device_map=device_map,
             trust_remote_code=True
         )
         

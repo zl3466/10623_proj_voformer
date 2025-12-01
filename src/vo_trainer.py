@@ -488,9 +488,17 @@ class NuScenesVOTrainer:
         # Initialize model
         self.model = VOModel(config['model']['name'], config['model']['vocab_size'], config)
         
-        # Setup device (device_map="auto" handles device placement)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # Note: Model is already on device via device_map="auto", but we keep this for compatibility
+        # Setup device for distributed training
+        import os
+        local_rank = os.getenv("LOCAL_RANK")
+        if local_rank is not None:
+            # Distributed training: use LOCAL_RANK to assign GPU
+            self.device = torch.device(f"cuda:{int(local_rank)}")
+            self.model.to(self.device)
+        else:
+            # Single GPU: device_map="auto" already handled placement
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
         logger.info(f"Using device: {self.device}")
         logger.info(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         
