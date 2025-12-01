@@ -63,37 +63,22 @@ class VOModel(nn.Module):
         else:
             logger.info(f"Downloading Qwen, will cache to: {model_cache}")
         
-        # Check if we're in distributed training mode
-        # If using DDP, don't use device_map (let Trainer handle device placement)
-        # Check environment variables set by torchrun/accelerate/distributed launchers
-        import os
-        is_distributed = (
-            os.getenv("WORLD_SIZE") is not None or
-            os.getenv("RANK") is not None or
-            os.getenv("LOCAL_RANK") is not None or
-            os.getenv("MASTER_ADDR") is not None
-        )
-        use_device_map = not is_distributed
-        
         # Try to use flash attention for faster training
         try:
             self.llm = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype=torch.bfloat16,
-                device_map="auto" if use_device_map else None,
+                device_map="auto",
                 trust_remote_code=True,
                 attn_implementation="flash_attention_2"
             )
-            if use_device_map:
-                logger.info("Using flash_attention_2 for faster training")
-            else:
-                logger.info("Using flash_attention_2 with distributed training (device_map=None)")
+            logger.info("Using flash_attention_2 for faster training")
         except (ValueError, ImportError) as e:
             logger.warning(f"Flash attention not available ({e}), falling back to default attention")
             self.llm = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype=torch.bfloat16,
-                device_map="auto" if use_device_map else None,
+                device_map="auto",
                 trust_remote_code=True
             )
         

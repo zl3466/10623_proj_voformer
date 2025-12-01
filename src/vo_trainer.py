@@ -488,10 +488,9 @@ class NuScenesVOTrainer:
         # Initialize model
         self.model = VOModel(config['model']['name'], config['model']['vocab_size'], config)
         
-        # Setup device
+        # Setup device (device_map="auto" handles device placement)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.to(self.device)
-        
+        # Note: Model is already on device via device_map="auto", but we keep this for compatibility
         logger.info(f"Using device: {self.device}")
         logger.info(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         
