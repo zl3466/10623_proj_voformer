@@ -97,11 +97,46 @@ def main():
     with open("config.yaml", 'r') as f:
         config = yaml.safe_load(f)
     
-    # Override wandb settings from command line
-    if args.use_wandb:
-        config['training']['use_wandb'] = True
-        config['training']['wandb_project'] = args.wandb_project
-        config['training']['wandb_run_name'] = args.wandb_run_name
+    # Override config with command line arguments
+    # All command line arguments override the config values
+    
+    # Model configuration
+    config['model']['name'] = args.model_name
+    config['model']['vocab_size'] = args.vocab_size
+    
+    # Data configuration
+    config['data']['num_input_frames'] = args.num_input_frames
+    config['data']['num_input_poses'] = args.num_input_poses
+    config['data']['num_target_poses'] = args.num_target_poses
+    
+    # Image configuration
+    config['image']['input_size'] = args.input_image_size
+    config['image']['num_tokens'] = args.num_tokens_image
+    
+    # Pose configuration
+    config['pose']['pose_representation'] = args.pose_representation
+    config['pose']['num_tokens_pose'] = args.num_tokens_pose
+    config['pose']['quantization_range'] = args.pose_quantization_range
+    
+    # Training configuration
+    config['training']['batch_size'] = args.batch_size
+    config['training']['num_epochs'] = args.num_epochs
+    config['training']['learning_rate'] = args.learning_rate
+    config['training']['output_dir'] = args.output_dir
+    
+    # Wandb configuration
+    # Only override use_wandb if explicitly specified in command line
+    if '--use_wandb' in sys.argv:
+        config['training']['use_wandb'] = args.use_wandb
+    # Always override wandb_project and wandb_run_name if they have defaults
+    config['training']['wandb_project'] = args.wandb_project
+    config['training']['wandb_run_name'] = args.wandb_run_name
+    
+    logger.info("Command line arguments override config.yaml values")
+    logger.info(f"  Model: {args.model_name}, Vocab size: {args.vocab_size}")
+    logger.info(f"  Data: {args.num_input_frames} frames, {args.num_input_poses} input poses, {args.num_target_poses} target poses")
+    logger.info(f"  Training: batch_size={args.batch_size}, epochs={args.num_epochs}, lr={args.learning_rate}")
+    logger.info(f"  Wandb: enabled={args.use_wandb}")
     
     # Initialize trainer
     trainer = NuScenesVOTrainer(
