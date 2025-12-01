@@ -50,7 +50,19 @@ class VOModel(nn.Module):
         # Store config for reference
         self.user_config = config
 
-        # Load Qwen 0.5B model (text-only)
+        # Load Qwen 0.5B model from HuggingFace cache or download
+        import os
+        from pathlib import Path
+        
+        # HuggingFace cache structure: ~/.cache/huggingface/hub/models--{org}--{model}
+        cache_dir = os.getenv("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+        model_cache = Path(cache_dir) / "hub" / f"models--{model_name.replace('/', '--')}"
+        
+        if model_cache.exists():
+            logger.info(f"Loading Qwen from: {model_cache}")
+        else:
+            logger.info(f"Downloading Qwen, will cache to: {model_cache}")
+        
         self.llm = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=torch.bfloat16,

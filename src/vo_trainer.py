@@ -84,6 +84,26 @@ class VOTrainer(Trainer):
         outputs = model(**inputs)
         loss = outputs['loss']
         
+        # Debug: Check for NaN or zero loss
+        if loss is not None:
+            if torch.isnan(loss) or torch.isinf(loss):
+                logger.error(f"NaN or Inf loss detected! Loss: {loss}")
+                # Check inputs
+                if 'labels' in inputs:
+                    logger.error(f"Labels shape: {inputs['labels'].shape}, min: {inputs['labels'].min()}, max: {inputs['labels'].max()}")
+                if 'logits' in outputs:
+                    logger.error(f"Logits shape: {outputs['logits'].shape}, has NaN: {torch.isnan(outputs['logits']).any()}")
+            elif loss.item() == 0.0:
+                logger.warning(f"Zero loss detected at step {self.state.global_step if hasattr(self.state, 'global_step') else 'unknown'}")
+                # Check if labels are valid
+                if 'labels' in inputs:
+                    labels = inputs['labels']
+                    logger.warning(f"Labels shape: {labels.shape}, unique values: {torch.unique(labels).numel()}, min: {labels.min()}, max: {labels.max()}")
+                # Check logits
+                if 'logits' in outputs:
+                    logits = outputs['logits']
+                    logger.warning(f"Logits shape: {logits.shape}, min: {logits.min()}, max: {logits.max()}, has NaN: {torch.isnan(logits).any()}")
+        
         return (loss, outputs) if return_outputs else loss
     
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
@@ -155,14 +175,23 @@ class VOTrainer(Trainer):
                 
                 gt_pose_tokens = batch['labels'] - pose_token_start_id
                 # print(f"eval: gt pose tokens: {gt_pose_tokens.shape} \n{gt_pose_tokens}")
-                # Convert tokens back to poses using tokenizer
-                pred_poses = self._tokens_to_poses(predicted_pose_tokens, self.pose_tokenizer)
-                gt_poses = self._tokens_to_poses(gt_pose_tokens, self.pose_tokenizer)
+                # Convert tokens back to poses using tokenizer (these are deltas)
+                pred_deltas = self._tokens_to_poses(predicted_pose_tokens, self.pose_tokenizer)
+                gt_deltas = self._tokens_to_poses(gt_pose_tokens, self.pose_tokenizer)
                 
-                # Compute min_ade for each time horizon
+                # Accumulate deltas to get absolute trajectories for min_ade computation
+                # Start from origin (0, 0, 0) for both - this ensures fair comparison
+                pred_poses = self._accumulate_pose_deltas(pred_deltas)
+                gt_poses = self._accumulate_pose_deltas(gt_deltas)
+                
+                # Compute min_ade for each time horizon on absolute coordinates
+                # pred_poses and gt_poses are now absolute trajectories (including start position)
+                # So we need to account for the +1 in length
                 for horizon in time_horizons:
-                    if horizon <= len(pred_poses) and horizon <= len(gt_poses):
-                        min_ade = self._compute_min_ade(pred_poses[:horizon], gt_poses[:horizon])
+                    # horizon is the number of steps, but trajectories include start (length = horizon + 1)
+                    if horizon + 1 <= len(pred_poses) and horizon + 1 <= len(gt_poses):
+                        # Take up to horizon+1 positions (start + horizon steps)
+                        min_ade = self._compute_min_ade(pred_poses[:horizon+1], gt_poses[:horizon+1])
                         if f'min_ade_{horizon}' not in min_ade_metrics:
                             min_ade_metrics[f'min_ade_{horizon}'] = []
                         min_ade_metrics[f'min_ade_{horizon}'].append(min_ade)
@@ -220,6 +249,32 @@ class VOTrainer(Trainer):
         poses = tokenizer.dequantize_pose(tokens_reshaped)
         
         return poses
+    
+    def _accumulate_pose_deltas(self, deltas, start_pose=None):
+        """
+        Accumulate pose deltas into absolute positions
+        
+        Args:
+            deltas: Array of pose deltas [T, num_joints, pose_dim]
+            start_pose: Starting pose [num_joints, pose_dim]. If None, starts from origin.
+        
+        Returns:
+            Absolute poses [T+1, num_joints, pose_dim] (includes start position)
+        """
+        if start_pose is None:
+            # Start from origin
+            start_pose = np.zeros((deltas.shape[1], deltas.shape[2]))
+        
+        # Initialize trajectory with start pose
+        trajectory = [start_pose.copy()]
+        
+        # Accumulate deltas
+        current_pose = start_pose.copy()
+        for delta in deltas:
+            current_pose = current_pose + delta
+            trajectory.append(current_pose.copy())
+        
+        return np.array(trajectory)
     
     def _compute_min_ade(self, pred_poses, gt_poses):
         """Compute Minimum Average Displacement Error (min_ade)"""

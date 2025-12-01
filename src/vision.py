@@ -43,11 +43,17 @@ class DINOv2VisionEncoder(nn.Module):
         # Projection layer to match Qwen's hidden size (this will be trained)
         self.projection = nn.Linear(self.dinov2_hidden_size, hidden_size)
         
-        # Ensure projection layer uses the same dtype as DINOv2
-        self.projection = self.projection.to(dtype=torch.float16)
+        # Initialize projection layer with small weights to prevent gradient explosion
+        # Use Xavier uniform initialization (similar to transformer initialization)
+        nn.init.xavier_uniform_(self.projection.weight, gain=0.02)
+        nn.init.zeros_(self.projection.bias)
+        
+        # Ensure projection layer uses bfloat16 to match Qwen model dtype
+        self.projection = self.projection.to(dtype=torch.bfloat16)
         
         logger.info(f"DINOv2 Vision Encoder initialized with hidden size: {hidden_size}")
         logger.info(f"DINOv2 model: {model_name}")
+        logger.info(f"Projection layer: trainable, dtype=bfloat16, initialized with Xavier uniform (gain=0.02)")
     
     def extract_features(self, images) -> torch.Tensor:
         """
@@ -75,6 +81,9 @@ class DINOv2VisionEncoder(nn.Module):
             
             # Get patch features (excluding CLS token)
             patch_features = outputs.last_hidden_state[:, 1:, :]  # Remove CLS token
+            
+            # Convert DINOv2 features to bfloat16 before projection (to match projection layer dtype)
+            patch_features = patch_features.to(dtype=torch.bfloat16)
             
             # Project to target hidden size (trainable, so outside no_grad)
             projected_features = self.projection(patch_features)

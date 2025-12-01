@@ -1,3 +1,18 @@
 # use dino_v2 branch
 python train.py --nusc_data_path /home/zl3466/Documents/dataset/NuScenes
 
+# eval baseline
+python eval_ckpt.py \
+    --nusc_data_path /home/zl3466/Documents/dataset/NuScenes \
+    --num_scenes 1 \
+    --generate_video \
+    --video_output_dir ./eval_output
+
+# eval ckpt
+python eval_ckpt.py \
+    --checkpoint_path ./vo_output/checkpoint-161830 \
+    --nusc_data_path /home/zl3466/Documents/dataset/NuScenes \
+    --num_scenes 1 \
+    --config_path config.yaml \
+    --generate_video \
+    --video_output_dir ./eval_output
