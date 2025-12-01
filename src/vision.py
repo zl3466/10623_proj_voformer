@@ -22,11 +22,16 @@ class DINOv2VisionEncoder(nn.Module):
     def __init__(self, model_name: str = "facebook/dinov2-base", hidden_size: int = 768):
         super().__init__()
         
+        # Check if we're in distributed training mode
+        # If using DDP, don't use device_map (let Trainer handle device placement)
+        import torch.distributed as dist
+        use_device_map = not (dist.is_available() and dist.is_initialized())
+        
         # Load DINOv2 model
         self.dinov2 = AutoModel.from_pretrained(
             model_name,
             torch_dtype=torch.float16,
-            device_map="auto",
+            device_map="auto" if use_device_map else None,
             trust_remote_code=True
         )
         

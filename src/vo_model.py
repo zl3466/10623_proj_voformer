@@ -63,12 +63,17 @@ class VOModel(nn.Module):
         else:
             logger.info(f"Downloading Qwen, will cache to: {model_cache}")
         
+        # Check if we're in distributed training mode
+        # If using DDP, don't use device_map (let Trainer handle device placement)
+        import torch.distributed as dist
+        use_device_map = not (dist.is_available() and dist.is_initialized())
+        
         # Try to use flash attention for faster training
         try:
             self.llm = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype=torch.bfloat16,
-                device_map="auto",
+                device_map="auto" if use_device_map else None,
                 trust_remote_code=True,
                 attn_implementation="flash_attention_2"
             )
@@ -78,7 +83,7 @@ class VOModel(nn.Module):
             self.llm = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype=torch.bfloat16,
-                device_map="auto",
+                device_map="auto" if use_device_map else None,
                 trust_remote_code=True
             )
         
