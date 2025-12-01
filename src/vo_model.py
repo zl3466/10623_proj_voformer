@@ -63,12 +63,24 @@ class VOModel(nn.Module):
         else:
             logger.info(f"Downloading Qwen, will cache to: {model_cache}")
         
-        self.llm = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            trust_remote_code=True
-        )
+        # Try to use flash attention for faster training
+        try:
+            self.llm = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=torch.bfloat16,
+                device_map="auto",
+                trust_remote_code=True,
+                attn_implementation="flash_attention_2"
+            )
+            logger.info("Using flash_attention_2 for faster training")
+        except (ValueError, ImportError) as e:
+            logger.warning(f"Flash attention not available ({e}), falling back to default attention")
+            self.llm = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=torch.bfloat16,
+                device_map="auto",
+                trust_remote_code=True
+            )
         
         # Add pose tokens to the tokenizer during initialization
         if config and 'model' in config and 'vocab_size' in config['model']:
