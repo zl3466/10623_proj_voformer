@@ -503,7 +503,7 @@ class NuScenesVOTrainer:
         if self.use_wandb:
             wandb.init(
                 project=config['training'].get('wandb_project', 'visual-odometry'),
-                name=config['training'].get('wandb_run_name', 'qwen25-vl-3b-translation-deltas'),
+                name=config['training'].get('wandb_run_name', 'qwen25-0.5B-translation-deltas'),
                 config={
                     'model_name': config['model']['name'],
                     'vocab_size': config['model']['vocab_size'],

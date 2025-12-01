@@ -41,8 +41,8 @@ def parse_args():
                         help='Learning rate')
     
     # Model arguments
-    parser.add_argument('--model_name', type=str, default='Qwen/Qwen2.5-VL-3B-Instruct',
-                        help='Hugging Face model name')
+    parser.add_argument('--model_name', type=str, default='Qwen/Qwen2.5-0.5B',
+                        help='Hugging Face model name (must be a causal LM, not VL model)')
     parser.add_argument('--vocab_size', type=int, default=1000,
                         help='Vocabulary size for pose tokenization')
     
@@ -79,7 +79,7 @@ def parse_args():
                         help='Enable Weights & Biases logging')
     parser.add_argument('--wandb_project', type=str, default='visual-odometry',
                         help='Wandb project name')
-    parser.add_argument('--wandb_run_name', type=str, default='qwen25-vl-3b-translation-deltas',
+    parser.add_argument('--wandb_run_name', type=str, default='qwen25-0.5B-translation-deltas',
                         help='Wandb run name')
     
     
