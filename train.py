@@ -31,43 +31,43 @@ def parse_args():
                         help='Path to save/load NuScenes metadata')
     
     # Training arguments
-    parser.add_argument('--output_dir', type=str, default='./vo_output',
-                        help='Output directory for model checkpoints')
-    parser.add_argument('--num_epochs', type=int, default=10,
-                        help='Number of training epochs')
-    parser.add_argument('--batch_size', type=int, default=2,
-                        help='Batch size for training')
-    parser.add_argument('--learning_rate', type=float, default=1e-5,
-                        help='Learning rate')
+    parser.add_argument('--output_dir', type=str, default=None,
+                        help='Output directory for model checkpoints (default: from config.yaml)')
+    parser.add_argument('--num_epochs', type=int, default=None,
+                        help='Number of training epochs (default: from config.yaml)')
+    parser.add_argument('--batch_size', type=int, default=None,
+                        help='Batch size for training (default: from config.yaml)')
+    parser.add_argument('--learning_rate', type=float, default=None,
+                        help='Learning rate (default: from config.yaml)')
     
     # Model arguments
-    parser.add_argument('--model_name', type=str, default='Qwen/Qwen2.5-0.5B',
-                        help='Hugging Face model name (must be a causal LM, not VL model)')
-    parser.add_argument('--vocab_size', type=int, default=1000,
-                        help='Vocabulary size for pose tokenization')
+    parser.add_argument('--model_name', type=str, default=None,
+                        help='Hugging Face model name (must be a causal LM, not VL model) (default: from config.yaml)')
+    parser.add_argument('--vocab_size', type=int, default=None,
+                        help='Vocabulary size for pose tokenization (default: from config.yaml)')
     
     # Sequence arguments
-    parser.add_argument('--num_input_frames', type=int, default=8,
-                        help='Number of input frames')
-    parser.add_argument('--num_input_poses', type=int, default=8,
-                        help='Number of input poses')
-    parser.add_argument('--num_target_poses', type=int, default=16,
-                        help='Number of target poses to predict')
+    parser.add_argument('--num_input_frames', type=int, default=None,
+                        help='Number of input frames (default: from config.yaml)')
+    parser.add_argument('--num_input_poses', type=int, default=None,
+                        help='Number of input poses (default: from config.yaml)')
+    parser.add_argument('--num_target_poses', type=int, default=None,
+                        help='Number of target poses to predict (default: from config.yaml)')
     
     # Image processing arguments
-    parser.add_argument('--input_image_size', type=int, default=224,
-                        help='Input image size (will be resized to this)')
-    parser.add_argument('--num_tokens_image', type=int, default=256,
-                        help='Fixed number of image tokens per image')
+    parser.add_argument('--input_image_size', type=int, default=None,
+                        help='Input image size (will be resized to this) (default: from config.yaml)')
+    parser.add_argument('--num_tokens_image', type=int, default=None,
+                        help='Fixed number of image tokens per image (default: from config.yaml)')
     
     # Pose tokenization arguments
-    parser.add_argument('--pose_representation', type=str, default='6dof',
+    parser.add_argument('--pose_representation', type=str, default=None,
                         choices=['6dof', 'translation', 'full_matrix'],
-                        help='Pose representation method')
-    parser.add_argument('--num_tokens_pose', type=int, default=6,
-                        help='Number of tokens per pose')
-    parser.add_argument('--pose_quantization_range', type=float, default=2.0,
-                        help='Range for pose quantization [-range, range]')
+                        help='Pose representation method (default: from config.yaml)')
+    parser.add_argument('--num_tokens_pose', type=int, default=None,
+                        help='Number of tokens per pose (default: from config.yaml)')
+    parser.add_argument('--pose_quantization_range', type=float, default=None,
+                        help='Range for pose quantization [-range, range] (default: from config.yaml)')
     
     # Logging
     parser.add_argument('--log_level', type=str, default='INFO',
@@ -76,11 +76,13 @@ def parse_args():
     
     # Wandb logging
     parser.add_argument('--use_wandb', action='store_true',
-                        help='Enable Weights & Biases logging')
-    parser.add_argument('--wandb_project', type=str, default='visual-odometry',
-                        help='Wandb project name')
-    parser.add_argument('--wandb_run_name', type=str, default='qwen25-0.5B-translation-deltas',
-                        help='Wandb run name')
+                        help='Enable Weights & Biases logging (default: from config.yaml)')
+    parser.add_argument('--no_wandb', action='store_true',
+                        help='Disable Weights & Biases logging (overrides config)')
+    parser.add_argument('--wandb_project', type=str, default=None,
+                        help='Wandb project name (default: from config.yaml)')
+    parser.add_argument('--wandb_run_name', type=str, default=None,
+                        help='Wandb run name (default: from config.yaml)')
     
     
     return parser.parse_args()
@@ -97,46 +99,49 @@ def main():
     with open("config.yaml", 'r') as f:
         config = yaml.safe_load(f)
     
-    # Override config with command line arguments
-    # All command line arguments override the config values
+    # Override config with command line arguments (only if explicitly provided)
+    # Mapping: (config_path_tuple, arg_name, arg_value)
+    config_overrides = [
+        (['model', 'name'], 'model_name', args.model_name),
+        (['model', 'vocab_size'], 'vocab_size', args.vocab_size),
+        (['data', 'num_input_frames'], 'num_input_frames', args.num_input_frames),
+        (['data', 'num_input_poses'], 'num_input_poses', args.num_input_poses),
+        (['data', 'num_target_poses'], 'num_target_poses', args.num_target_poses),
+        (['image', 'input_size'], 'input_image_size', args.input_image_size),
+        (['image', 'num_tokens'], 'num_tokens_image', args.num_tokens_image),
+        (['pose', 'pose_representation'], 'pose_representation', args.pose_representation),
+        (['pose', 'num_tokens_pose'], 'num_tokens_pose', args.num_tokens_pose),
+        (['pose', 'quantization_range'], 'pose_quantization_range', args.pose_quantization_range),
+        (['training', 'batch_size'], 'batch_size', args.batch_size),
+        (['training', 'num_epochs'], 'num_epochs', args.num_epochs),
+        (['training', 'learning_rate'], 'learning_rate', args.learning_rate),
+        (['training', 'output_dir'], 'output_dir', args.output_dir),
+        (['training', 'wandb_project'], 'wandb_project', args.wandb_project),
+        (['training', 'wandb_run_name'], 'wandb_run_name', args.wandb_run_name),
+    ]
     
-    # Model configuration
-    config['model']['name'] = args.model_name
-    config['model']['vocab_size'] = args.vocab_size
+    overrides = []
+    for config_path, arg_name, arg_value in config_overrides:
+        if arg_value is not None:
+            # Navigate to the config path and set the value
+            target = config
+            for key in config_path[:-1]:
+                target = target[key]
+            target[config_path[-1]] = arg_value
+            overrides.append(f"{arg_name}={arg_value}")
     
-    # Data configuration
-    config['data']['num_input_frames'] = args.num_input_frames
-    config['data']['num_input_poses'] = args.num_input_poses
-    config['data']['num_target_poses'] = args.num_target_poses
+    # Handle wandb boolean flag separately
+    if args.no_wandb:
+        config['training']['use_wandb'] = False
+        overrides.append("use_wandb=False")
+    elif '--use_wandb' in sys.argv:
+        config['training']['use_wandb'] = True
+        overrides.append("use_wandb=True")
     
-    # Image configuration
-    config['image']['input_size'] = args.input_image_size
-    config['image']['num_tokens'] = args.num_tokens_image
-    
-    # Pose configuration
-    config['pose']['pose_representation'] = args.pose_representation
-    config['pose']['num_tokens_pose'] = args.num_tokens_pose
-    config['pose']['quantization_range'] = args.pose_quantization_range
-    
-    # Training configuration
-    config['training']['batch_size'] = args.batch_size
-    config['training']['num_epochs'] = args.num_epochs
-    config['training']['learning_rate'] = args.learning_rate
-    config['training']['output_dir'] = args.output_dir
-    
-    # Wandb configuration
-    # Only override use_wandb if explicitly specified in command line
-    if '--use_wandb' in sys.argv:
-        config['training']['use_wandb'] = args.use_wandb
-    # Always override wandb_project and wandb_run_name if they have defaults
-    config['training']['wandb_project'] = args.wandb_project
-    config['training']['wandb_run_name'] = args.wandb_run_name
-    
-    logger.info("Command line arguments override config.yaml values")
-    logger.info(f"  Model: {args.model_name}, Vocab size: {args.vocab_size}")
-    logger.info(f"  Data: {args.num_input_frames} frames, {args.num_input_poses} input poses, {args.num_target_poses} target poses")
-    logger.info(f"  Training: batch_size={args.batch_size}, epochs={args.num_epochs}, lr={args.learning_rate}")
-    logger.info(f"  Wandb: enabled={args.use_wandb}")
+    if overrides:
+        logger.info(f"Command line overrides: {', '.join(overrides)}")
+    else:
+        logger.info("Using all values from config.yaml")
     
     # Initialize trainer
     trainer = NuScenesVOTrainer(
