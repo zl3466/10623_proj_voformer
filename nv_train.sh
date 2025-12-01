@@ -30,4 +30,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node="4" \
     --batch_size 8 \
     --vocab_size 100 \
     --wandb_project visual-odometry \
-    --wandb_run_name nv_vocab100_img196
+    --wandb_run_name nv_vocab100_img196 \
+    --output_dir "./output/nv_vocab100_img196" \
+    --save_steps 1000 \
+    --eval_steps 500 

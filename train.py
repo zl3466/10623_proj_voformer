@@ -39,6 +39,10 @@ def parse_args():
                         help='Batch size for training (default: from config.yaml)')
     parser.add_argument('--learning_rate', type=float, default=None,
                         help='Learning rate (default: from config.yaml)')
+    parser.add_argument('--save_steps', type=int, default=None,
+                        help='Checkpoint save interval (default: from config.yaml)')
+    parser.add_argument('--eval_steps', type=int, default=None,
+                        help='Evaluation interval (default: from config.yaml)')
     
     # Model arguments
     parser.add_argument('--model_name', type=str, default=None,
@@ -115,6 +119,8 @@ def main():
         (['training', 'batch_size'], 'batch_size', args.batch_size),
         (['training', 'num_epochs'], 'num_epochs', args.num_epochs),
         (['training', 'learning_rate'], 'learning_rate', args.learning_rate),
+        (['training', 'save_steps'], 'save_steps', args.save_steps),
+        (['training', 'eval_steps'], 'eval_steps', args.eval_steps),
         (['training', 'output_dir'], 'output_dir', args.output_dir),
         (['training', 'wandb_project'], 'wandb_project', args.wandb_project),
         (['training', 'wandb_run_name'], 'wandb_run_name', args.wandb_run_name),
