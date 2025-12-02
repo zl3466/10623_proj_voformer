@@ -61,8 +61,6 @@ def parse_args():
     # Image processing arguments
     parser.add_argument('--input_image_size', type=int, default=None,
                         help='Input image size (will be resized to this) (default: from config.yaml)')
-    parser.add_argument('--num_tokens_image', type=int, default=None,
-                        help='Fixed number of image tokens per image (default: from config.yaml)')
     
     # Pose tokenization arguments
     parser.add_argument('--pose_representation', type=str, default=None,
@@ -112,7 +110,6 @@ def main():
         (['data', 'num_input_poses'], 'num_input_poses', args.num_input_poses),
         (['data', 'num_target_poses'], 'num_target_poses', args.num_target_poses),
         (['image', 'input_size'], 'input_image_size', args.input_image_size),
-        (['image', 'num_tokens'], 'num_tokens_image', args.num_tokens_image),
         (['pose', 'pose_representation'], 'pose_representation', args.pose_representation),
         (['pose', 'num_tokens_pose'], 'num_tokens_pose', args.num_tokens_pose),
         (['pose', 'quantization_range'], 'pose_quantization_range', args.pose_quantization_range),
