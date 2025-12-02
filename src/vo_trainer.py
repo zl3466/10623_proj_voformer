@@ -47,10 +47,19 @@ class VOTrainer(Trainer):
         self._cleanup_old_checkpoints()
     
     def _cleanup_old_checkpoints(self):
-        """Keep only the latest 3 checkpoints, deleting the oldest ones"""
+        """Keep only the latest 3 checkpoints, deleting the oldest ones
+        Only runs on rank 0 to avoid race conditions in distributed training
+        """
         import os
         import glob
         import shutil
+        
+        # Only run cleanup on rank 0 (main process) to avoid conflicts
+        rank = os.getenv("RANK")
+        is_main_process = rank is None or rank == "0"
+        
+        if not is_main_process:
+            return  # Skip cleanup on non-main processes
         
         output_dir = self.args.output_dir
         
