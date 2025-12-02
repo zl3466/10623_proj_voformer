@@ -20,7 +20,7 @@ source /lustre/fsw/portfolios/nvr/users/ymingli/miniconda3/etc/profile.d/conda.s
 conda activate voformer
 export WANDB_API_KEY="de2b136779280d18cb6d59d1a23248b5010833f8"
 
-CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node="4" \
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 torchrun --nproc_per_node="8" \
     --nnodes="1" \
     --node_rank="0" \
     --master_addr="127.0.0.1" \
