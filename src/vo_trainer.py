@@ -407,8 +407,9 @@ class VOTrainer(Trainer):
         
         plt.tight_layout()
         
-        # Log to wandb
-        wandb.log({"eval/sample_visualizations": wandb.Image(fig)})
+        # Log to wandb (only if initialized on main process)
+        if wandb.run is not None:
+            wandb.log({"eval/sample_visualizations": wandb.Image(fig)})
         plt.close(fig)
         print(f"Logged sample visualizations to wandb: {len(sample_data)} samples")
             
@@ -502,12 +503,16 @@ class NuScenesVOTrainer:
         logger.info(f"Using device: {self.device}")
         logger.info(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         
-        # Initialize wandb if enabled
+        # Initialize wandb if enabled (only on main process for distributed training)
         self.use_wandb = config['training'].get('use_wandb', False)
         if isinstance(self.use_wandb, str):
             self.use_wandb = self.use_wandb.lower() in ('true', '1', 'yes', 'on')
         
-        if self.use_wandb:
+        # Check if we're on the main process
+        rank = os.getenv("RANK")
+        is_main_process = rank is None or rank == "0"
+        
+        if self.use_wandb and is_main_process:
             wandb.init(
                 project=config['training'].get('wandb_project', 'visual-odometry'),
                 name=config['training'].get('wandb_run_name', 'qwen25-0.5B-translation-deltas'),
@@ -524,7 +529,9 @@ class NuScenesVOTrainer:
                     'quantization_range': config['pose']['quantization_range']
                 }
             )
-            logger.info("Wandb initialized for logging")
+            logger.info("Wandb initialized for logging on main process")
+        elif self.use_wandb:
+            logger.info(f"Wandb logging disabled on process rank {rank}")
         else:
             logger.info("Wandb logging disabled")
         
