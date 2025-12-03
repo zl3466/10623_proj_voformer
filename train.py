@@ -127,7 +127,7 @@ def main():
     
     overrides = []
     for config_path, arg_name, arg_value in config_overrides:
-        if arg_value is not None:
+        if arg_value is not None and arg_value != "":
             # Navigate to the config path and set the value
             target = config
             for key in config_path[:-1]:
