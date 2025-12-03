@@ -609,8 +609,12 @@ class NuScenesVOTrainer:
         except FileNotFoundError:
             logger.warning(f"No tokenizer config found at {checkpoint_dir}, using default tokenizer")
     
-    def train(self):
-        """Train using Hugging Face Trainer"""
+    def train(self, resume_from_checkpoint=None):
+        """Train using Hugging Face Trainer
+        
+        Args:
+            resume_from_checkpoint: Path to checkpoint directory to resume from, or None to auto-detect
+        """
         logger.info("Starting training with Hugging Face Trainer...")
         
         # Create data collator
@@ -640,6 +644,19 @@ class NuScenesVOTrainer:
             save_safetensors=False,  # Disable safetensors to avoid shared tensor issues
         )
         
+        # Determine checkpoint to resume from
+        checkpoint = resume_from_checkpoint
+        if checkpoint is None:
+            # Try to auto-detect the latest checkpoint
+            checkpoint = get_last_checkpoint(training_args.output_dir)
+        
+        # Load tokenizer from checkpoint if resuming
+        if checkpoint:
+            logger.info(f"Resuming training from checkpoint: {checkpoint}")
+            self.load_tokenizer_from_checkpoint(checkpoint)
+        else:
+            logger.info("Starting training from scratch (no checkpoint found)")
+        
         # Create VOTrainer (inherits from HF Trainer)
         trainer = VOTrainer(
             model=self.model,
@@ -652,13 +669,8 @@ class NuScenesVOTrainer:
         # Pass the pose tokenizer to the trainer
         trainer.pose_tokenizer = self.pose_tokenizer
         
-        # Check for existing checkpoint
-        # checkpoint = get_last_checkpoint(training_args.output_dir)
-        # if checkpoint:
-        #     logger.info(f"Resuming from checkpoint: {checkpoint}")
-        #     trainer.train(resume_from_checkpoint=checkpoint)
-        # else:
-        trainer.train()
+        # Train (will resume from checkpoint if provided)
+        trainer.train(resume_from_checkpoint=checkpoint)
         
         # Save final model and tokenizer
         trainer.save_model()

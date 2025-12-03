@@ -33,6 +33,8 @@ def parse_args():
     # Training arguments
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Output directory for model checkpoints (default: from config.yaml)')
+    parser.add_argument('--resume_from_checkpoint', type=str, default=None,
+                        help='Path to checkpoint directory to resume training from (e.g., ./vo_output/checkpoint-10000)')
     parser.add_argument('--num_epochs', type=int, default=None,
                         help='Number of training epochs (default: from config.yaml)')
     parser.add_argument('--batch_size', type=int, default=None,
@@ -158,7 +160,9 @@ def main():
     
     # Train model
     logger.info("Starting training...")
-    trainer.train()
+    if args.resume_from_checkpoint == "":
+        args.resume_from_checkpoint = None
+    trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
     
     logger.info("Training completed!")
 

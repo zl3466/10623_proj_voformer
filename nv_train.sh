@@ -3,6 +3,7 @@
 BATCH_SIZE=8
 VOCAB_SIZE=100
 INPUT_IMAGE_SIZE=256
+RESUME_FROM_CHECKPOINT=""
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -19,20 +20,26 @@ while [[ $# -gt 0 ]]; do
             INPUT_IMAGE_SIZE="$2"
             shift 2
             ;;
+        --resume_from_ckpt)
+            RESUME_FROM_CHECKPOINT="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --batch_size BATCH_SIZE    Batch size per device (default: 8)"
-            echo "  --vocab_size VOCAB_SIZE    Vocabulary size for pose tokenization (default: 100)"
-            echo "  --img_size IMG_SIZE        Input image size in pixels (default: 256)"
-            echo "  -h, --help                 Show this help message"
+            echo "  --batch_size BATCH_SIZE           Batch size per device (default: 8)"
+            echo "  --vocab_size VOCAB_SIZE           Vocabulary size for pose tokenization (default: 100)"
+            echo "  --img_size IMG_SIZE               Input image size in pixels (default: 256)"
+            echo "  --resume_from_ckpt PATH     Path to checkpoint directory to resume from (optional)"
+            echo "  -h, --help                        Show this help message"
             echo ""
             echo "Examples:"
             echo "  $0                                    # Use all defaults"
             echo "  $0 --batch_size 4                     # Custom batch size"
             echo "  $0 --batch_size 4 --vocab_size 200    # Custom batch and vocab"
             echo "  $0 --batch_size 4 --vocab_size 100 --img_size 256  # All custom"
+            echo "  $0 --resume_from_ckpt ./output/nv_vocab100_img256_bs8/checkpoint-10000  # Resume training"
             exit 0
             ;;
         *)
@@ -74,6 +81,9 @@ echo "  Vocab size: ${VOCAB_SIZE}"
 echo "  Input image size: ${INPUT_IMAGE_SIZE}"
 echo "  Wandb run name: ${WANDB_RUN_NAME}"
 echo "  Output dir: ${OUTPUT_DIR}"
+if [ -n "${RESUME_FROM_CHECKPOINT}" ]; then
+    echo "  Resuming from checkpoint: ${RESUME_FROM_CHECKPOINT}"
+fi
 echo ""
 
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 torchrun --nproc_per_node="8" \
@@ -90,4 +100,5 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 torchrun --nproc_per_node="8" \
     --wandb_run_name ${WANDB_RUN_NAME} \
     --output_dir "${OUTPUT_DIR}" \
     --save_steps 1000 \
-    --eval_steps 1000 
+    --eval_steps 1000 \
+    --resume_from_checkpoint "${RESUME_FROM_CHECKPOINT}" 
