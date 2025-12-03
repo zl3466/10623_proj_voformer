@@ -85,7 +85,7 @@ conda activate voformer
 export WANDB_API_KEY="de2b136779280d18cb6d59d1a23248b5010833f8"
 
 # Generate wandb run name based on parameters
-WANDB_RUN_NAME="nv_vocab${VOCAB_SIZE}_img${INPUT_IMAGE_SIZE}_bs${BATCH_SIZE}"
+WANDB_RUN_NAME="nv_vocab${VOCAB_SIZE}_img${INPUT_IMAGE_SIZE}_bs${BATCH_SIZE}_n${NUM_INPUT_FRAMES}"
 OUTPUT_DIR="./output/${WANDB_RUN_NAME}"
 
 
