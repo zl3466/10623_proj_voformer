@@ -648,7 +648,12 @@ class NuScenesVOTrainer:
         checkpoint = resume_from_checkpoint
         if checkpoint is None:
             # Try to auto-detect the latest checkpoint
-            checkpoint = get_last_checkpoint(training_args.output_dir)
+            # Handle case where output directory doesn't exist yet (fresh training run)
+            try:
+                checkpoint = get_last_checkpoint(training_args.output_dir)
+            except (FileNotFoundError, OSError):
+                # Directory doesn't exist yet, which is fine for a fresh training run
+                checkpoint = None
         
         # Load tokenizer from checkpoint if resuming
         if checkpoint:
