@@ -99,11 +99,11 @@ CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node="2" \
     --batch_size ${BATCH_SIZE} \
     --vocab_size ${VOCAB_SIZE} \
     --input_image_size ${INPUT_IMAGE_SIZE} \
-    --num_input_frames "${NUM_INPUT_FRAMES}" \
-    --num_input_poses "${NUM_INPUT_POSES}" \
+    ${NUM_INPUT_FRAMES:+--num_input_frames ${NUM_INPUT_FRAMES}} \
+    ${NUM_INPUT_POSES:+--num_input_poses ${NUM_INPUT_POSES}} \
     --wandb_project visual-odometry \
     --wandb_run_name ${WANDB_RUN_NAME} \
     --output_dir "${OUTPUT_DIR}" \
     --save_steps 1000 \
     --eval_steps 1000 \
-    --resume_from_checkpoint "${RESUME_FROM_CHECKPOINT}" 
+    ${RESUME_FROM_CHECKPOINT:+--resume_from_checkpoint "${RESUME_FROM_CHECKPOINT}"}
